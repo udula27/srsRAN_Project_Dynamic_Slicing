@@ -21,6 +21,7 @@
  */
 
 #include "srsran/asn1/e2sm/e2sm_rc_ies.h"
+#include "fmt/format.h"
 using namespace asn1;
 using namespace asn1::e2sm;
 
@@ -2471,7 +2472,6 @@ SRSASN_CODE e2sm_rc_ind_msg_format2_ran_param_item_s::pack(bit_ref& bref) const
   bref.pack(ext, 1);
   HANDLE_CODE(pack_integer(bref, ran_param_id, (uint64_t)1u, (uint64_t)4294967295u, true, true));
   HANDLE_CODE(ran_param_value_type.pack(bref));
-
   bref.align_bytes_zero();
 
   return SRSASN_SUCCESS;
@@ -4126,6 +4126,15 @@ void e2sm_rc_ind_msg_format1_item_s::to_json(json_writer& j) const
 SRSASN_CODE e2sm_rc_ind_msg_format2_item_s::pack(bit_ref& bref) const
 {
   bref.pack(ext, 1);
+
+  // DEBUG: Print what we're packing
+  fmt::print("  [ASN1 DEBUG] Packing UE param item:\n");
+  fmt::print("    - UE ID present: yes\n");
+  fmt::print("    - RAN param list size: {}\n", ran_p_list.size());
+  for (size_t i = 0; i < ran_p_list.size(); i++) {
+    fmt::print("      RAN param [{}]: ID={}\n", i, ran_p_list[i].ran_param_id);
+  }
+
   HANDLE_CODE(ue_id.pack(bref));
   HANDLE_CODE(pack_dyn_seq_of(bref, ran_p_list, 1, 65535, true));
 
