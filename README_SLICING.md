@@ -1,11 +1,9 @@
-# srsRAN Project with Closed-Loop Dynamic Slice Control (CCNC 2027)
+# srsRAN Project with Closed-Loop Dynamic Slice Control
 
-This repository is a modified version of the srsRAN Project (since archived and succeeded by OCUDU), accompanying the paper:
-
-> *An Open-Source 5G Testbed with Dynamic Network Slicing: Design, Implementation, and Performance Evaluation*, IEEE CCNC 2027.
+This repository is a modified version of the srsRAN Project (since archived and succeeded by OCUDU), accompanying our work on an open-source 5G testbed with dynamic network slicing.
 
 **Base version:** srsRAN Project commit `3ed363dabf2f8176bd60bc1d3bfcba14e5ae2c6f` (upstream `main`).
-**Branch:** `slicing-e2sm-rc` | **Release tag:** `ccnc2027-camera-ready`
+**Branch:** `slicing-e2sm-rc` | **Release tag:** `srsRAN-dynamic-slicing-final`
 
 ## What this fork adds
 
@@ -17,7 +15,7 @@ The base version already provides statically configured slices and an E2SM-RC sl
 
 To see exactly what changed:
 
-    git diff 3ed363dabf2f8176bd60bc1d3bfcba14e5ae2c6f..ccnc2027-camera-ready --stat
+    git diff 3ed363dabf2f8176bd60bc1d3bfcba14e5ae2c6f..srsRAN-dynamic-slicing-final --stat
 
 **Note:** every S-NSSAI used by a UE must have a configured slice. UEs whose S-NSSAI has no configured slice are not scheduled in the default slice.
 
