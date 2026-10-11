@@ -28,6 +28,7 @@
 #include "srsran/du/du_high/du_high_clock_controller.h"
 #include "srsran/du/du_high/du_manager/du_manager_factory.h"
 #include "srsran/mac/mac_cell_timing_context.h"
+#include "srsran/e2/e2_du_notifier_registry.h"
 #include "srsran/mac/mac_metrics_notifier.h"
 #include "srsran/srslog/srslog.h"
 #include "srsran/support/timers.h"
@@ -108,6 +109,7 @@ du_high_impl::du_high_impl(const du_high_configuration& config_, const du_high_d
        cfg.metrics.enable_f1ap,
        cfg.metrics.enable_mac,
        cfg.metrics.enable_sched},
+      {e2_du_notifier_registry::get_instance().get_ue_context_notifier()},  // Connect E2 notifier from registry
       cfg.test_cfg});
 
   // Connect Layer<->DU manager adapters.

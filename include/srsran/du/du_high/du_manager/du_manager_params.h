@@ -27,6 +27,7 @@
 #include "srsran/du/du_high/du_qos_config.h"
 #include "srsran/du/du_high/du_srb_config.h"
 #include "srsran/du/du_high/du_test_mode_config.h"
+#include "srsran/e2/e2_du_ue_context_notifier.h"
 #include "srsran/f1ap/du/f1ap_du.h"
 #include "srsran/f1u/du/f1u_gateway.h"
 #include "srsran/mac/mac_manager.h"
@@ -96,6 +97,10 @@ struct du_manager_params {
     bool                      sched_enabled = false;
   };
 
+  struct e2_config_params {
+    e2_du_ue_context_notifier* ue_context_notifier = nullptr;
+  };
+
   ran_params            ran;
   service_params        services;
   f1ap_config_params    f1ap;
@@ -103,6 +108,7 @@ struct du_manager_params {
   rlc_config_params     rlc;
   mac_config_params     mac;
   metrics_config_params metrics;
+  e2_config_params      e2;
   du_test_mode_config   test_cfg;
 };
 

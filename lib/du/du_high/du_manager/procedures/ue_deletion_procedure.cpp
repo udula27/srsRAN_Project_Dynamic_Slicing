@@ -21,6 +21,7 @@
  */
 
 #include "ue_deletion_procedure.h"
+#include "srsran/e2/e2_du_notifier_registry.h"
 #include "srsran/support/async/async_timer.h"
 #include "srsran/support/async/execute_on.h"
 
@@ -69,6 +70,13 @@ void ue_deletion_procedure::operator()(coro_context<async_task<void>>& ctx)
     // Timeout specified between UE deactivation and UE actual removal.
     CORO_AWAIT(async_wait_for(du_params.services.timers.create_unique_timer(du_params.services.du_mng_exec),
                               ran_res_release_timeout));
+  }
+
+  // > Notify E2 layer about UE context release (check registry directly)
+  auto* notifier = e2_du_notifier_registry::get_instance().get_ue_context_notifier();
+  if (notifier != nullptr) {
+    notifier->on_ue_context_release(ue_index);
+    proc_logger.log_proc_warning("Notified E2 about UE context release");
   }
 
   // > Remove UE object from DU UE manager.

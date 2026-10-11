@@ -24,6 +24,9 @@
 
 namespace srsran {
 
+// Forward declaration for E2 slice PRB policy integration.
+class cell_slice_resource_manager;
+
 class mac_cell_manager;
 class mac_ue_configurator;
 class mac_positioning_measurement_handler;
@@ -42,6 +45,10 @@ public:
 
   /// Fetch positioning measurement handler.
   virtual mac_positioning_measurement_handler& get_positioning_handler() = 0;
+
+  /// Get slice resource manager for a cell (for E2 integration).
+  /// This method delegates to the underlying scheduler.
+  virtual cell_slice_resource_manager* get_cell_slice_resource_manager(du_cell_index_t cell_index) = 0;
 };
 
 } // namespace srsran

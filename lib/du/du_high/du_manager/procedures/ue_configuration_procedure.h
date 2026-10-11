@@ -49,6 +49,7 @@ private:
   // and F1-U bearers.
   void update_ue_context();
   void clear_old_ue_context();
+  void notify_e2_ue_context_update(e2_du_ue_context_notifier* notifier);
 
   /// \brief Update MAC MUX and DEMUX tables of the respective UE, given the newly added/modified/removed bearers and
   /// the scheduler with the new UE config.

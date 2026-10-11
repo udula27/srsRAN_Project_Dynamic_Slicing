@@ -30,6 +30,7 @@
 #include "srsran/ran/phy_time_unit.h"
 #include "srsran/ran/rnti.h"
 #include "srsran/ran/rrm.h"
+#include "srsran/ran/s_nssai.h"
 #include "srsran/ran/slot_pdu_capacity_constants.h"
 #include "srsran/ran/slot_point.h"
 #include "srsran/ran/sr_configuration.h"
@@ -44,6 +45,9 @@
 #include "srsran/scheduler/config/slice_rrm_policy_config.h"
 
 namespace srsran {
+
+// Forward declaration for E2 slice PR policy integration.
+class cell_slice_resource_manager;
 
 class scheduler_cell_metrics_notifier;
 
@@ -148,6 +152,8 @@ struct sched_ue_config_request {
   std::optional<meas_gap_config> meas_gap_cfg;
   /// Whether this configuration procedure comes after rrcReestablishment.
   bool reestablished;
+  /// S-NSSAI (Slice/Service Type) for this UE. Used for slice-aware metrics in E2SM-KPM.
+  std::optional<s_nssai_t> s_nssai;
 };
 
 /// Request to create a new UE in scheduler.
@@ -223,6 +229,11 @@ public:
   /// \brief Deactivate a configured cell. This method has no effect if the cell is already deactivated.
   /// \remark This method needs to be called after the last slot_indication() call.
   virtual void handle_cell_deactivation_request(du_cell_index_t cell_index) = 0;
+
+  /// \\brief Get slice resource manager for a cell (for E2 integration).
+  /// \\param cell_index DU-specific cell index.
+  /// \\return Pointer to slice resource manager, or nullptr if cell doesn't exist.
+  virtual cell_slice_resource_manager* get_cell_slice_resource_manager(du_cell_index_t cell_index) = 0;
 
   /// \brief Handle slice reconfiguration request of a cell.
   virtual void handle_slice_reconfiguration_request(const du_cell_slice_reconfig_request& msg) = 0;

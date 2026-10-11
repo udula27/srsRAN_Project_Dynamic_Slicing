@@ -363,7 +363,7 @@ static auto make_paging_info_log_list(const static_vector<dl_paging_allocation, 
   return list;
 }
 
-static auto make_info_log_entry(const sched_result& result, bool log_broadcast)
+[[maybe_unused]] static auto make_info_log_entry(const sched_result& result, bool log_broadcast)
 {
   return make_formattable([sibs    = make_sib_info_log_list(result.dl.bc.sibs, log_broadcast),
                            rars    = make_rar_info_log_list(result.dl.rar_grants),
@@ -770,29 +770,8 @@ void scheduler_result_logger::log_debug(const sched_result& result, std::chrono:
 
 void scheduler_result_logger::log_info(const sched_result& result, std::chrono::microseconds decision_latency)
 {
-  const bool failed_attempts = result.failed_attempts.pdcch + result.failed_attempts.uci > 0;
-  bool       slot_is_logged  = (log_broadcast and not result.dl.bc.sibs.empty()) or not result.dl.rar_grants.empty() or
-                        not result.dl.ue_grants.empty() or not result.ul.puschs.empty() or
-                        not result.dl.paging_grants.empty() or failed_attempts;
-
-  if (slot_is_logged) {
-    unsigned nof_pdschs = result.dl.paging_grants.size() + result.dl.rar_grants.size() + result.dl.ue_grants.size();
-    if (log_broadcast) {
-      nof_pdschs += result.dl.bc.sibs.size();
-    }
-    const unsigned nof_puschs = result.ul.puschs.size();
-    const unsigned nof_pucchs = result.ul.pucchs.size();
-    logger.info("Slot decisions pci={} t={}us ({} PDSCH{}, {} PUSCH{}, {} PUCCH{}): {}",
-                pci,
-                decision_latency.count(),
-                nof_pdschs,
-                nof_pdschs == 1 ? "" : "s",
-                nof_puschs,
-                nof_puschs == 1 ? "" : "s",
-                nof_pucchs,
-                nof_pucchs == 1 ? "" : "s",
-                make_info_log_entry(result, log_broadcast));
-  }
+  (void)result;
+  (void)decision_latency;
 }
 
 void scheduler_result_logger::on_scheduler_result(const sched_result&       result,
@@ -803,7 +782,5 @@ void scheduler_result_logger::on_scheduler_result(const sched_result&       resu
   }
   if (logger.debug.enabled()) {
     log_debug(result, decision_latency);
-  } else {
-    log_info(result, decision_latency);
   }
 }

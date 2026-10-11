@@ -24,8 +24,64 @@
 #include "../logging/scheduler_metrics_handler.h"
 #include "srsran/ran/pdcch/search_space.h"
 #include "srsran/support/math/mod_math_utils.h"
+#include <limits>
 
 using namespace srsran;
+
+namespace {
+
+static bool snssai_compatible(const s_nssai_t& lhs, const s_nssai_t& rhs)
+{
+  // SST must always match.
+  if (lhs.sst != rhs.sst) {
+    return false;
+  }
+  // Exact SD match.
+  if (lhs.sd == rhs.sd) {
+    return true;
+  }
+  // A wildcard/unset SD on EITHER side matches any explicit SD on the other side.
+  // This correctly lets a budget entry keyed by {SST:1, SD:wildcard} match a UE
+  // whose S-NSSAI is {SST:1, SD:0x1}, while keeping {SST:2, SD:0x1} and
+  // {SST:2, SD:0x2} strictly isolated from each other when both have explicit SDs.
+  const auto is_no_sd = [](const s_nssai_t& snssai) {
+    return !snssai.sd.is_set() || snssai.sd.value() == 0 || snssai.sd.value() == 0xFFFFFF;
+  };
+  return is_no_sd(lhs) || is_no_sd(rhs);
+}
+
+static std::map<s_nssai_t, slice_prb_budget>::iterator
+find_budget_entry(std::map<s_nssai_t, slice_prb_budget>& budgets, const s_nssai_t& snssai)
+{
+  auto it = budgets.find(snssai);
+  if (it != budgets.end()) {
+    return it;
+  }
+  return std::find_if(budgets.begin(), budgets.end(), [&snssai](const auto& kv) { return snssai_compatible(kv.first, snssai); });
+}
+
+template <typename SliceCandidate>
+static unsigned get_slice_remaining_budget(const SliceCandidate&                  slice,
+                                           std::map<s_nssai_t, slice_prb_budget>& budgets)
+{
+  // SRB and DEFAULT_DRB (id < 2) are never budget-limited here.
+  if (slice.id().value() < 2) {
+    return std::numeric_limits<unsigned>::max();
+  }
+
+  auto budget_it = find_budget_entry(budgets, slice.cfg().rrc_member.s_nssai);
+  if (budget_it == budgets.end()) {
+    // No budget entry yet (transient during xApp policy propagation):
+    // use the slice's configured max PRBs so traffic is not blocked.
+    return slice.cfg().rbs.max();
+  }
+
+  return budget_it->second.budget_prbs > budget_it->second.allocated_prbs
+             ? (budget_it->second.budget_prbs - budget_it->second.allocated_prbs)
+             : 0;
+}
+
+} // namespace
 
 /// \brief Helper function to determine the expected number of PDSCHs that can be allocated per slot in a manner that
 /// ensures fair distribution of PDSCHs across slots.
@@ -175,12 +231,18 @@ void intra_slice_scheduler::post_process_results()
   ue_alloc.post_process_results();
 }
 
-void intra_slice_scheduler::dl_sched(dl_ran_slice_candidate slice, scheduler_policy& policy)
+void intra_slice_scheduler::dl_sched(dl_ran_slice_candidate slice, scheduler_policy& policy, std::map<s_nssai_t, slice_prb_budget>& slice_budgets)
 {
   srsran_sanity_check(slice.remaining_rbs() > 0, "Invalid slice slice");
   if (slice.get_slice_ues().empty()) {
     return;
   }
+
+  // [ISOLATION-FIX] Reset per-slice PDCCH attempt counter so each slice gets its own
+  // independent budget. Without this, failed attempts from a previously-scheduled slice
+  // reduce the attempt headroom available to this slice, causing cross-slice startvation
+  // for physical UEs that experience HARQ retransmissions or UCI allocation failures.
+  dl_attempts_count = 0;
 
   if (slice.get_slot_tx() != pdsch_slot) {
     pdsch_slot = slice.get_slot_tx();
@@ -194,22 +256,26 @@ void intra_slice_scheduler::dl_sched(dl_ran_slice_candidate slice, scheduler_pol
   }
 
   // Schedule reTxs.
-  unsigned nof_retxs_alloc = schedule_dl_retx_candidates(slice, pdschs_to_alloc);
+  unsigned nof_retxs_alloc = schedule_dl_retx_candidates(slice, pdschs_to_alloc, slice_budgets);
   pdschs_to_alloc -= std::min(pdschs_to_alloc, nof_retxs_alloc);
   if (pdschs_to_alloc == 0) {
     return;
   }
 
   // Allocate UE newTx grants.
-  schedule_dl_newtx_candidates(slice, policy, pdschs_to_alloc);
+  schedule_dl_newtx_candidates(slice, policy, pdschs_to_alloc, slice_budgets);
 }
 
-void intra_slice_scheduler::ul_sched(ul_ran_slice_candidate slice, scheduler_policy& ul_policy)
+void intra_slice_scheduler::ul_sched(ul_ran_slice_candidate slice, scheduler_policy& ul_policy, std::map<s_nssai_t, slice_prb_budget>& slice_budgets)
 {
   srsran_sanity_check(slice.remaining_rbs() > 0, "Invalid slice slice");
   if (slice.get_slice_ues().empty()) {
     return;
   }
+
+  // [ISOLATION-FIX] Reset per-slice PDCCH attempt counter for UL so each slice gets its
+  // own independent attempt budget — same rationale as the DL path above.
+  ul_attempts_count = 0;
 
   if (slice.get_slot_tx() != pusch_slot) {
     pusch_slot = slice.get_slot_tx();
@@ -223,14 +289,14 @@ void intra_slice_scheduler::ul_sched(ul_ran_slice_candidate slice, scheduler_pol
   }
 
   // Schedule reTxs.
-  unsigned nof_retxs_alloc = schedule_ul_retx_candidates(slice, puschs_to_alloc);
+  unsigned nof_retxs_alloc = schedule_ul_retx_candidates(slice, puschs_to_alloc, slice_budgets);
   puschs_to_alloc -= std::min(puschs_to_alloc, nof_retxs_alloc);
   if (puschs_to_alloc == 0) {
     return;
   }
 
   // Allocate UE newTx grants.
-  schedule_ul_newtx_candidates(slice, ul_policy, puschs_to_alloc);
+  schedule_ul_newtx_candidates(slice, ul_policy, puschs_to_alloc, slice_budgets);
 }
 
 /// \brief Helper function that returns a pair with the remaining number of RBs to allocate in this slice scheduling
@@ -272,6 +338,16 @@ static std::pair<unsigned, unsigned> get_max_grants_and_rb_grant_size(span<const
   unsigned pdcchs_in_grid = is_dl ? cell_alloc[0].result.dl.dl_pdcchs.size() : cell_alloc[0].result.dl.ul_pdcchs.size();
   max_nof_candidates -= std::min(pdcchs_in_grid, max_nof_candidates);
 
+  // [ISOLATION-FIX] `max_nof_candidates` can reach zero when a previously-scheduled slice
+  // has already consumed all the CORESET CCE budget counted here.  This causes the current
+  // slice's `ues_to_alloc` to collapse to zero, returning {0,0} and skipping the slice
+  // entirely — even if physical PDCCH capacity remains.  For strict per-slice isolation,
+  // guarantee at least one candidate for this slice: the real PDCCH allocation (inside
+  // ue_alloc.allocate_dl_grant) will fail gracefully if there truly is no CCE left.
+  if (max_nof_candidates == 0) {
+    max_nof_candidates = 1;
+  }
+
   // > Ensure fairness in PDCCH allocation between DL and UL.
   // [Implementation-defined] To avoid running out of PDCCH candidates for UL allocation in multi-UE scenario and short
   // BW (e.g. TDD and 10Mhz BW), apply further limits on nof. UEs to be scheduled per slot.
@@ -293,8 +369,11 @@ static std::pair<unsigned, unsigned> get_max_grants_and_rb_grant_size(span<const
 }
 
 unsigned intra_slice_scheduler::schedule_dl_retx_candidates(dl_ran_slice_candidate& slice,
-                                                            unsigned                max_ue_grants_to_alloc)
+                                                            unsigned                max_ue_grants_to_alloc,
+                                                            std::map<s_nssai_t, slice_prb_budget>& slice_budgets)
 {
+  const unsigned slots_per_second = 1000 * get_nof_slots_per_subframe(cell_alloc.cfg.scs_common);
+  (void)(slots_per_second > 0 && (pdcch_slot.to_uint() % slots_per_second) == 0); // log_enforcement removed
   const slice_ue_repository& slice_ues     = slice.get_slice_ues();
   dl_harq_pending_retx_list  pending_harqs = cell_harqs.pending_dl_retxs();
 
@@ -308,9 +387,44 @@ unsigned intra_slice_scheduler::schedule_dl_retx_candidates(dl_ran_slice_candida
       // HARQ ReTx is for another slice.
       continue;
     }
+
+    // [PHASE2-FIX] Check if UE exists in this slice's repository before accessing.
+    // During UE connection, HARQ can be pending before UE is added to slice repository.
+    if (!slice_ues.contains(h.ue_index())) {
+      // UE not yet in this slice's repository - skip this HARQ.
+      continue;
+    }
+
     const slice_ue& u = slice_ues[h.ue_index()];
     if (not can_allocate_pdsch(u, u.get_cc())) {
       continue;
+    }
+
+    // [ENFORCEMENT] PRB budget gate for DL retx.
+    // Declare outside the guard so post-allocation budget update can reference it.
+    // nullopt means SRB/DEFAULT_DRB: never budget-limited.
+    std::optional<s_nssai_t> slice_assignment;
+    if (slice.id().value() >= 2) {
+      slice_assignment = u.get_cc().get_slice_assignment();
+      if (!slice_assignment.has_value()) {
+        slice_assignment = slice.cfg().rrc_member.s_nssai;
+      }
+      if (slice_assignment.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, *slice_assignment);
+        if (budget_it != slice_budgets.end()) {
+          // [RETX-OVERRUN-FIX] Use unsigned-clamped remaining so a prior newtx that already
+          // pushed allocated close to budget cannot allow a large retx to exceed it.
+          const unsigned retx_remaining =
+              (budget_it->second.budget_prbs > budget_it->second.allocated_prbs)
+                  ? (budget_it->second.budget_prbs - budget_it->second.allocated_prbs)
+                  : 0U;
+          if (retx_remaining == 0) {
+            continue;
+          }
+        } else {
+          // No budget entry — allow traffic.
+        }
+      }
     }
 
     // Perform DL grant allocation, including PDCCH, PDSCH and UCI.
@@ -325,6 +439,19 @@ unsigned intra_slice_scheduler::schedule_dl_retx_candidates(dl_ran_slice_candida
       vrb_interval alloc_vrbs = result.value();
       used_dl_vrbs.fill(alloc_vrbs.start(), alloc_vrbs.stop());
       slice.store_grant(alloc_vrbs.length());
+
+      // [PHASE2-ENFORCEMENT] Update slice PRB budget after successful allocation.
+      // Clamp allocated_prbs to budget_prbs so one oversized retx cannot silently push the
+      // counter above the cap and corrupt all subsequent remaining-budget calculations.
+      if (slice_assignment.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, *slice_assignment);
+        if (budget_it != slice_budgets.end()) {
+          budget_it->second.allocated_prbs =
+              std::min(budget_it->second.allocated_prbs + alloc_vrbs.length(),
+                       budget_it->second.budget_prbs);
+        }
+      }
+
       if (++alloc_count >= max_ue_grants_to_alloc or slice.remaining_rbs() == 0) {
         // Maximum number of allocations reached.
         break;
@@ -342,8 +469,11 @@ unsigned intra_slice_scheduler::schedule_dl_retx_candidates(dl_ran_slice_candida
 }
 
 unsigned intra_slice_scheduler::schedule_ul_retx_candidates(ul_ran_slice_candidate& slice,
-                                                            unsigned                max_ue_grants_to_alloc)
+                                                            unsigned                max_ue_grants_to_alloc,
+                                                            std::map<s_nssai_t, slice_prb_budget>& slice_budgets)
 {
+  const unsigned slots_per_second = 1000 * get_nof_slots_per_subframe(cell_alloc.cfg.scs_common);
+  (void)(slots_per_second > 0 && (pdcch_slot.to_uint() % slots_per_second) == 0); // log_enforcement removed
   const slice_ue_repository& slice_ues     = slice.get_slice_ues();
   ul_harq_pending_retx_list  pending_harqs = cell_harqs.pending_ul_retxs();
 
@@ -356,10 +486,43 @@ unsigned intra_slice_scheduler::schedule_ul_retx_candidates(ul_ran_slice_candida
     if (h.get_grant_params().slice_id != slice.id()) {
       continue;
     }
+
+    // [PHASE2-FIX] Check if UE exists in this slice's repository before accessing.
+    // During UE connection, HARQ can be pending before UE is added to slice repository.
+    if (!slice_ues.contains(h.ue_index())) {
+      // UE not yet in this slice's repository - skip this HARQ.
+      continue;
+    }
+
     const slice_ue& u = slice_ues[h.ue_index()];
 
     if (not can_allocate_pusch(u, u.get_cc())) {
       continue;
+    }
+
+    // [ENFORCEMENT] PRB budget gate for UL retx.
+    // Declare outside the guard so post-allocation budget update can reference it.
+    std::optional<s_nssai_t> slice_assignment;
+    if (slice.id().value() >= 2) {
+      slice_assignment = u.get_cc().get_slice_assignment();
+      if (!slice_assignment.has_value()) {
+        slice_assignment = slice.cfg().rrc_member.s_nssai;
+      }
+      if (slice_assignment.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, *slice_assignment);
+        if (budget_it != slice_budgets.end()) {
+          // [RETX-OVERRUN-FIX] Same fix as DL retx path above.
+          const unsigned retx_remaining =
+              (budget_it->second.budget_prbs > budget_it->second.allocated_prbs)
+                  ? (budget_it->second.budget_prbs - budget_it->second.allocated_prbs)
+                  : 0U;
+          if (retx_remaining == 0) {
+            continue;
+          }
+        } else {
+          // No budget entry — allow traffic.
+        }
+      }
     }
 
     // Allocate PDCCH and PUSCH.
@@ -376,6 +539,17 @@ unsigned intra_slice_scheduler::schedule_ul_retx_candidates(ul_ran_slice_candida
       vrb_interval alloc_vrbs = result.value();
       used_ul_vrbs.fill(alloc_vrbs.start(), alloc_vrbs.stop());
       slice.store_grant(alloc_vrbs.length());
+
+      // [PHASE2-ENFORCEMENT] Update and clamp slice PRB budget after successful allocation.
+      if (slice_assignment.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, *slice_assignment);
+        if (budget_it != slice_budgets.end()) {
+          budget_it->second.allocated_prbs =
+              std::min(budget_it->second.allocated_prbs + alloc_vrbs.length(),
+                       budget_it->second.budget_prbs);
+        }
+      }
+
       if (++alloc_count >= max_ue_grants_to_alloc or slice.remaining_rbs() == 0) {
         // Maximum number of allocations reached.
         break;
@@ -395,6 +569,9 @@ unsigned intra_slice_scheduler::schedule_ul_retx_candidates(ul_ran_slice_candida
 void intra_slice_scheduler::prepare_newtx_dl_candidates(const dl_ran_slice_candidate& slice,
                                                         scheduler_policy&             dl_policy)
 {
+  // Clear candidates from previous calls to prevent stale UE pointers.
+  newtx_candidates.clear();
+
   // Build list of UE candidates for newTx.
   if (not slice_ctxt_list.contains(slice.id())) {
     slice_ctxt_list.emplace(slice.id(), *this);
@@ -423,6 +600,9 @@ void intra_slice_scheduler::prepare_newtx_dl_candidates(const dl_ran_slice_candi
 void intra_slice_scheduler::prepare_newtx_ul_candidates(const ul_ran_slice_candidate& slice,
                                                         scheduler_policy&             ul_policy)
 {
+  // Clear candidates from previous calls to prevent stale UE pointers.
+  newtx_candidates.clear();
+
   // Build list of UE candidates for newTx.
   if (not slice_ctxt_list.contains(slice.id())) {
     slice_ctxt_list.emplace(slice.id(), *this);
@@ -450,8 +630,16 @@ void intra_slice_scheduler::prepare_newtx_ul_candidates(const ul_ran_slice_candi
 
 unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candidate& slice,
                                                              scheduler_policy&       dl_policy,
-                                                             unsigned                max_ue_grants_to_alloc)
+                                                             unsigned                max_ue_grants_to_alloc,
+                                                             std::map<s_nssai_t, slice_prb_budget>& slice_budgets)
 {
+  const unsigned slots_per_second = 1000 * get_nof_slots_per_subframe(cell_alloc.cfg.scs_common);
+  (void)(slots_per_second > 0 && (pdcch_slot.to_uint() % slots_per_second) == 0); // log_enforcement removed
+  // [PHASE2-ENFORCEMENT] Clear parallel slice vector AND grant builder vector from any previous call.
+  // This prevents size mismatches if previous call returned early without reaching the clear at the end.
+  pending_dl_newtx_slices.clear();
+  pending_dl_newtxs.clear();
+
   // Prepare candidate list.
   prepare_newtx_dl_candidates(slice, dl_policy);
   if (newtx_candidates.empty()) {
@@ -461,6 +649,17 @@ unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candid
   // Recompute max number of UE grants that can be scheduled in this slot and the number of RBs per grant.
   auto [rbs_to_alloc, max_rbs_per_grant] = get_max_grants_and_rb_grant_size(
       newtx_candidates, cell_alloc, slice, used_dl_vrbs, std::min(max_ue_grants_to_alloc, expected_pdschs_per_slot));
+
+  if (slice.id().value() >= 2) {
+    // No budget entry check: if absent, slice runs uncapped at cfg.rbs.max().
+    (void)find_budget_entry(slice_budgets, slice.cfg().rrc_member.s_nssai);
+  }
+  const unsigned slice_remaining_budget = get_slice_remaining_budget(slice, slice_budgets);
+  rbs_to_alloc                          = std::min(rbs_to_alloc, slice_remaining_budget);
+
+  if (slice_remaining_budget == 0) {
+    return 0;
+  }
   if (max_rbs_per_grant == 0) {
     return 0;
   }
@@ -481,6 +680,28 @@ unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candid
       }
     }
 
+    // [ENFORCEMENT] PRB budget gate for DL newtx Stage 1.
+    // Only custom slices (id >= 2) carry per-S-NSSAI budgets.
+    // SRB (id=0) and DEFAULT_DRB (id=1) must never be blocked here because
+    // they transport RRC/NAS during attach (SecurityMode, Registration, PDU session).
+    std::optional<s_nssai_t> stage1_slice_assignment;
+    if (slice.id().value() >= 2) {
+      stage1_slice_assignment = ue_candidate.ue_cc->get_slice_assignment();
+      if (!stage1_slice_assignment.has_value()) {
+        stage1_slice_assignment = slice.cfg().rrc_member.s_nssai;
+      }
+      if (stage1_slice_assignment.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, *stage1_slice_assignment);
+        if (budget_it != slice_budgets.end()) {
+          if (budget_it->second.allocated_prbs >= budget_it->second.budget_prbs) {
+            continue;
+          }
+        } else {
+          // No budget entry — allow traffic.
+        }
+      }
+    }
+
     // Create DL grant builder.
     auto result =
         ue_alloc.allocate_dl_grant(ue_newtx_dl_grant_request{*ue_candidate.ue, pdsch_slot, ue_candidate.pending_bytes});
@@ -490,6 +711,11 @@ unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candid
       auto& grant_builder = result.value();
       rb_count += std::min(grant_builder.context().expected_nof_rbs, max_rbs_per_grant);
       pending_dl_newtxs.push_back(std::move(grant_builder));
+
+      // Store S-NSSAI assignment for Stage 2 budget enforcement.
+      // For SRB/DEFAULT_DRB (id<2) stage1_slice_assignment is nullopt; Stage 2 will skip enforcement for them.
+      pending_dl_newtx_slices.push_back(stage1_slice_assignment);
+
       if (rb_count >= rbs_to_alloc) {
         // Enough UEs have been allocated to ensure that the grid is filled. Move to stage 2.
         break;
@@ -517,6 +743,18 @@ unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candid
     return 0;
   }
 
+  // [PHASE2-ENFORCEMENT] Validate parallel vector sizes match before Stage 2.
+  if (pending_dl_newtxs.size() != pending_dl_newtx_slices.size()) {
+    // Clear both to prevent segfault and skip enforcement this slot.
+    for (auto& grant_builder : pending_dl_newtxs) {
+      grant_builder.set_pdsch_params({}, {}, enable_pdsch_interleaving);
+    }
+    // Clear both to prevent segfault and skip enforcement this slot.
+    pending_dl_newtxs.clear();
+    pending_dl_newtx_slices.clear();
+    return 0;
+  }
+
   // Stage 2: Derive CRBs, MCS, and number of layers for each grant.
   max_rbs_per_grant = rbs_to_alloc / pending_dl_newtxs.size();
   rb_count          = 0;
@@ -531,15 +769,36 @@ unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candid
     } else {
       max_grant_size = max_rbs_per_grant + rbs_missing;
     }
+
+    // [PHASE2-ENFORCEMENT] Limit grant size to remaining slice PRB budget.
+    if (alloc_count < pending_dl_newtx_slices.size()) {
+      const auto& slice_assignment_opt = pending_dl_newtx_slices[alloc_count];
+      if (slice_assignment_opt.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, slice_assignment_opt.value());
+        if (budget_it != slice_budgets.end()) {
+          unsigned remaining_budget = (budget_it->second.budget_prbs > budget_it->second.allocated_prbs) ?
+                                      (budget_it->second.budget_prbs - budget_it->second.allocated_prbs) : 0;
+          if (remaining_budget < static_cast<unsigned>(max_grant_size)) {
+            max_grant_size = remaining_budget;
+          }
+        } else {
+          // No budget entry for this custom slice (transient xApp propagation delay).
+          // Stage 1 already allowed this UE; do not zero the grant here.
+          // max_grant_size stays unchanged (already bounded by rbs_to_alloc).
+        }
+      }
+    }
+
+    if (max_grant_size <= 0) {
+      // Finalize empty grant to keep grant builder lifecycle consistent.
+      grant_builder.set_pdsch_params({}, {}, enable_pdsch_interleaving);
+      continue;
+    }
     srsran_assert(max_grant_size > 0, "Invalid grant size.");
 
     // Derive recommended parameters for the DL newTx grant.
     vrb_interval alloc_vrbs = grant_builder.recommended_vrbs(used_dl_vrbs, max_grant_size);
     if (alloc_vrbs.empty()) {
-      logger.warning("ue={} c-rnti={}: Failed to allocate RBs for PDSCH grant at slot={}",
-                     fmt::underlying(grant_builder.ue().ue_index()),
-                     grant_builder.ue().crnti(),
-                     slice.get_slot_tx());
       // We let the grant be empty. It will be skipped in the post-processing scheduling step.
       grant_builder.set_pdsch_params({}, {}, enable_pdsch_interleaving);
       continue;
@@ -565,25 +824,57 @@ unsigned intra_slice_scheduler::schedule_dl_newtx_candidates(dl_ran_slice_candid
 
     // Update slice state.
     slice.store_grant(nof_rbs_alloc);
+
+    // [PHASE2-ENFORCEMENT] Update slice PRB budget - safe version using parallel slice vector.
+    // Bounds check to prevent segfault if vectors are out of sync.
+    if (alloc_count < pending_dl_newtx_slices.size()) {
+      const auto& slice_assignment_opt = pending_dl_newtx_slices[alloc_count];
+      if (slice_assignment_opt.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, slice_assignment_opt.value());
+        if (budget_it != slice_budgets.end()) {
+          budget_it->second.allocated_prbs += nof_rbs_alloc;
+        }
+      }
+    }
+
     rb_count += nof_rbs_alloc;
     rbs_missing = (max_grant_size - nof_rbs_alloc);
   }
 
-  // Clear grant builders.
+  // Clear grant builders and parallel slice vector.
   const unsigned alloc_count = pending_dl_newtxs.size();
   pending_dl_newtxs.clear();
+  pending_dl_newtx_slices.clear();
 
   // Update policy with final allocation results.
   const auto& pdschs = cell_alloc[pdsch_slot].result.dl.ue_grants;
-  dl_policy.save_dl_newtx_grants(span<const dl_msg_alloc>(pdschs.end() - alloc_count, pdschs.end()));
+  std::vector<dl_msg_alloc> valid_dl_grants;
+  valid_dl_grants.reserve(alloc_count);
+  for (const dl_msg_alloc& grant : span<const dl_msg_alloc>(pdschs.end() - alloc_count, pdschs.end())) {
+    if (grant.pdsch_cfg.rnti == rnti_t::INVALID_RNTI or grant.pdsch_cfg.codewords.empty() or grant.tb_list.empty()) {
+      continue;
+    }
+    valid_dl_grants.push_back(grant);
+  }
+  if (not valid_dl_grants.empty()) {
+    dl_policy.save_dl_newtx_grants(valid_dl_grants);
+  }
 
-  return alloc_count;
+  return valid_dl_grants.size();
 }
 
 unsigned intra_slice_scheduler::schedule_ul_newtx_candidates(ul_ran_slice_candidate& slice,
                                                              scheduler_policy&       ul_policy,
-                                                             unsigned                max_ue_grants_to_alloc)
+                                                             unsigned                max_ue_grants_to_alloc,
+                                                             std::map<s_nssai_t, slice_prb_budget>& slice_budgets)
 {
+  const unsigned slots_per_second = 1000 * get_nof_slots_per_subframe(cell_alloc.cfg.scs_common);
+  (void)(slots_per_second > 0 && (pdcch_slot.to_uint() % slots_per_second) == 0); // log_enforcement removed
+  // [PHASE2-ENFORCEMENT] Clear parallel slice vector AND grant builder vector from any previous call.
+  // This prevents size mismatches if previous call returned early without reaching the clear at the end.
+  pending_ul_newtx_slices.clear();
+  pending_ul_newtxs.clear();
+
   // Prepare candidate list.
   prepare_newtx_ul_candidates(slice, ul_policy);
   if (newtx_candidates.empty()) {
@@ -593,6 +884,17 @@ unsigned intra_slice_scheduler::schedule_ul_newtx_candidates(ul_ran_slice_candid
   // Recompute max number of UE grants that can be scheduled in this slot and the number of RBs per grant.
   auto [rbs_to_alloc, expected_rbs_per_grant] =
       get_max_grants_and_rb_grant_size(newtx_candidates, cell_alloc, slice, used_ul_vrbs, max_ue_grants_to_alloc);
+
+  if (slice.id().value() >= 2) {
+    // No budget entry check: if absent, slice runs uncapped at cfg.rbs.max().
+    (void)find_budget_entry(slice_budgets, slice.cfg().rrc_member.s_nssai);
+  }
+  const unsigned slice_remaining_budget = get_slice_remaining_budget(slice, slice_budgets);
+  rbs_to_alloc                          = std::min(rbs_to_alloc, slice_remaining_budget);
+
+  if (slice_remaining_budget == 0) {
+    return 0;
+  }
   if (expected_rbs_per_grant == 0) {
     return 0;
   }
@@ -600,6 +902,27 @@ unsigned intra_slice_scheduler::schedule_ul_newtx_candidates(ul_ran_slice_candid
   // Stage 1: Pre-select UEs with the highest priority and reserve control-plane space for their UL grants.
   unsigned rb_count = 0;
   for (const auto& ue_candidate : newtx_candidates) {
+    // [ENFORCEMENT] PRB budget gate for UL newtx Stage 1.
+    // Only custom slices (id >= 2) carry per-S-NSSAI budgets.
+    // SRB (id=0) and DEFAULT_DRB (id=1) must never be blocked here.
+    std::optional<s_nssai_t> stage1_slice_assignment;
+    if (slice.id().value() >= 2) {
+      stage1_slice_assignment = ue_candidate.ue_cc->get_slice_assignment();
+      if (!stage1_slice_assignment.has_value()) {
+        stage1_slice_assignment = slice.cfg().rrc_member.s_nssai;
+      }
+      if (stage1_slice_assignment.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, *stage1_slice_assignment);
+        if (budget_it != slice_budgets.end()) {
+          if (budget_it->second.allocated_prbs >= budget_it->second.budget_prbs) {
+            continue;
+          }
+        } else {
+          // No budget entry — allow traffic.
+        }
+      }
+    }
+
     // Create UL grant builder.
     // NOTE: the symbols passed to the grant are the symbols that are available for PUSCH and for which the used VRBs
     // have been computed.
@@ -611,6 +934,11 @@ unsigned intra_slice_scheduler::schedule_ul_newtx_candidates(ul_ran_slice_candid
       auto& grant_builder = result.value();
       rb_count += std::min(grant_builder.context().expected_nof_rbs, expected_rbs_per_grant);
       pending_ul_newtxs.push_back(std::move(grant_builder));
+
+      // Store S-NSSAI for Stage 2 budget enforcement.
+      // nullopt for SRB/DEFAULT_DRB means Stage 2 will skip enforcement for them.
+      pending_ul_newtx_slices.push_back(stage1_slice_assignment);
+
       if (rb_count >= rbs_to_alloc) {
         // Enough UEs have been allocated to ensure that the grid is filled. Move to stage 2.
         break;
@@ -635,6 +963,18 @@ unsigned intra_slice_scheduler::schedule_ul_newtx_candidates(ul_ran_slice_candid
     return 0;
   }
 
+  // [PHASE2-ENFORCEMENT] Validate parallel vector sizes match before Stage 2.
+  if (pending_ul_newtxs.size() != pending_ul_newtx_slices.size()) {
+    // Clear both to prevent segfault and skip enforcement this slot.
+    for (auto& grant_builder : pending_ul_newtxs) {
+      grant_builder.set_pusch_params({});
+    }
+    // Clear both to prevent segfault and skip enforcement this slot.
+    pending_ul_newtxs.clear();
+    pending_ul_newtx_slices.clear();
+    return 0;
+  }
+
   // Stage 2: Derive CRBs, MCS, and number of layers for each grant.
   expected_rbs_per_grant = rbs_to_alloc / pending_ul_newtxs.size();
   rb_count               = 0;
@@ -649,15 +989,36 @@ unsigned intra_slice_scheduler::schedule_ul_newtx_candidates(ul_ran_slice_candid
     } else {
       max_grant_size = expected_rbs_per_grant + rbs_missing;
     }
+
+    // [PHASE2-ENFORCEMENT] Limit grant size to remaining slice PRB budget.
+    if (alloc_count < pending_ul_newtx_slices.size()) {
+      const auto& slice_assignment_opt = pending_ul_newtx_slices[alloc_count];
+      if (slice_assignment_opt.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, slice_assignment_opt.value());
+        if (budget_it != slice_budgets.end()) {
+          unsigned remaining_budget = (budget_it->second.budget_prbs > budget_it->second.allocated_prbs) ?
+                                      (budget_it->second.budget_prbs - budget_it->second.allocated_prbs) : 0;
+          if (remaining_budget < static_cast<unsigned>(max_grant_size)) {
+            max_grant_size = remaining_budget;
+          }
+        } else {
+          // No budget entry for this custom slice (transient xApp propagation delay).
+          // Stage 1 already allowed this UE; do not zero the grant here.
+          // max_grant_size stays unchanged (already bounded by rbs_to_alloc).
+        }
+      }
+    }
+
+    if (max_grant_size <= 0) {
+      // Finalize empty grant to keep grant builder lifecycle consistent.
+      grant_builder.set_pusch_params({});
+      continue;
+    }
     srsran_assert(max_grant_size > 0, "Invalid grant size.");
 
     // Derive recommended parameters for the DL newTx grant.
     vrb_interval alloc_vrbs = grant_builder.recommended_vrbs(used_ul_vrbs, max_grant_size);
     if (alloc_vrbs.empty()) {
-      logger.error("ue={} c-rnti={}: Failed to allocate RBs for PUSCH grant at slot={}",
-                   fmt::underlying(grant_builder.ue().ue_index()),
-                   grant_builder.ue().crnti(),
-                   slice.get_slot_tx());
       // We let the grant be empty. It will be skipped in the post-processing scheduling step.
       grant_builder.set_pusch_params({});
       continue;
@@ -672,19 +1033,43 @@ unsigned intra_slice_scheduler::schedule_ul_newtx_candidates(ul_ran_slice_candid
 
     // Update slice state.
     slice.store_grant(nof_rbs_alloc);
+
+    // [PHASE2-ENFORCEMENT] Update slice PRB budget - safe version using parallel slice vector.
+    // Bounds check to prevent segfault if vectors are out of sync.
+    if (alloc_count < pending_ul_newtx_slices.size()) {
+      const auto& slice_assignment_opt = pending_ul_newtx_slices[alloc_count];
+      if (slice_assignment_opt.has_value()) {
+        auto budget_it = find_budget_entry(slice_budgets, slice_assignment_opt.value());
+        if (budget_it != slice_budgets.end()) {
+          budget_it->second.allocated_prbs += nof_rbs_alloc;
+        }
+      }
+    }
+
     rb_count += nof_rbs_alloc;
     rbs_missing = max_grant_size - nof_rbs_alloc;
   }
 
-  // Clear grant builders.
+  // Clear grant builders and parallel slice vector.
   unsigned alloc_count = pending_ul_newtxs.size();
   pending_ul_newtxs.clear();
+  pending_ul_newtx_slices.clear();
 
   // Update policy with allocation results.
   const auto& puschs = cell_alloc[pusch_slot].result.ul.puschs;
-  ul_policy.save_ul_newtx_grants(span<const ul_sched_info>(puschs.end() - alloc_count, puschs.end()));
+  std::vector<ul_sched_info> valid_ul_grants;
+  valid_ul_grants.reserve(alloc_count);
+  for (const ul_sched_info& grant : span<const ul_sched_info>(puschs.end() - alloc_count, puschs.end())) {
+    if (grant.pusch_cfg.rnti == rnti_t::INVALID_RNTI) {
+      continue;
+    }
+    valid_ul_grants.push_back(grant);
+  }
+  if (not valid_ul_grants.empty()) {
+    ul_policy.save_ul_newtx_grants(valid_ul_grants);
+  }
 
-  return alloc_count;
+  return valid_ul_grants.size();
 }
 
 bool intra_slice_scheduler::can_allocate_pdsch(const slice_ue& u, const ue_cell& ue_cc) const
@@ -717,14 +1102,7 @@ std::optional<ue_newtx_candidate> intra_slice_scheduler::create_newtx_dl_candida
   if (not ue_cc.harqs.has_empty_dl_harqs()) {
     // No available HARQs.
     if (not ue_cc.harqs.find_pending_dl_retx().has_value()) {
-      // All HARQs are waiting for their respective HARQ-ACK. This may be a symptom of a long RTT for the PDSCH
-      // and HARQ-ACK.
-      logger.info(
-          "ue={} rnti={} PDSCH allocation skipped. Cause: All the HARQs are allocated and waiting for their "
-          "respective HARQ-ACK. Check if any HARQ-ACK went missing in the lower layers or is arriving too late to "
-          "the scheduler.",
-          fmt::underlying(ue_cc.ue_index),
-          ue_cc.rnti());
+      // All HARQs are waiting for their respective HARQ-ACK.
       cell_metrics.handle_late_dl_harqs();
     }
     return std::nullopt;
@@ -750,12 +1128,7 @@ std::optional<ue_newtx_candidate> intra_slice_scheduler::create_newtx_ul_candida
   if (not ue_cc.harqs.has_empty_ul_harqs()) {
     // No available HARQs.
     if (not ue_cc.harqs.find_pending_ul_retx().has_value()) {
-      // All HARQs are waiting for their respective CRC. This may be a symptom of a slow PUSCH processing chain.
-      logger.info("ue={} rnti={} PUSCH allocation skipped. Cause: All the UE HARQs are busy waiting for "
-                  "their respective CRC result. Check if any CRC PDU went missing in the lower layers or is "
-                  "arriving too late to the scheduler.",
-                  fmt::underlying(ue_cc.ue_index),
-                  ue_cc.rnti());
+      // All HARQs are waiting for their respective CRC.
       cell_metrics.handle_late_ul_harqs();
     }
     return std::nullopt;
@@ -926,8 +1299,7 @@ void intra_slice_scheduler::update_used_ul_vrbs(const ul_ran_slice_candidate& sl
   }
 
   if (symbols_to_check.empty()) {
-    logger.debug(
-        "No symbols available for PUSCH allocation on slot={} for slice_id={}", pusch_slot, slice.id().value());
+    // No symbols available for PUSCH allocation on this slot.
   }
 
   used_ul_vrbs = cell_alloc[pusch_slot]

@@ -136,9 +136,11 @@ du_cell_manager::handle_cell_reconf_request(const du_cell_param_config_request& 
           // Update the policy member configuration.
           unsigned min_prb_ratio = rrm_policy_ratio.minimum_ratio.value_or(0);
           unsigned max_prb_ratio = rrm_policy_ratio.maximum_ratio.value_or(100);
+          unsigned ded_prb_ratio = rrm_policy_ratio.dedicated_ratio.value_or(0);
 
           min_prb_ratio = std::clamp(min_prb_ratio, static_cast<unsigned>(0), static_cast<unsigned>(100));
           max_prb_ratio = std::clamp(max_prb_ratio, static_cast<unsigned>(0), static_cast<unsigned>(100));
+          ded_prb_ratio = std::clamp(ded_prb_ratio, static_cast<unsigned>(0), static_cast<unsigned>(100));
 
           const unsigned min_prb = static_cast<int>((1.0 * min_prb_ratio / 100) * nof_prbs);
           const unsigned max_prb = static_cast<int>((1.0 * max_prb_ratio / 100) * nof_prbs);
@@ -156,10 +158,27 @@ du_cell_manager::handle_cell_reconf_request(const du_cell_param_config_request& 
           if ((policy_cfg.rbs.min() != min_prb) or (policy_cfg.rbs.max() != max_prb)) {
             // Policy configuration has been updated.
             result.slice_reconf_req->rrm_policies.push_back(
-                du_cell_slice_reconfig_request::rrm_policy_config{policy_member, {min_prb, max_prb}});
+                du_cell_slice_reconfig_request::rrm_policy_config{policy_member, {ded_prb_ratio * nof_prbs / 100,
+                                                                                   min_prb,
+                                                                                   max_prb}});
           }
 
-          policy_cfg.rbs = {min_prb, max_prb};
+          policy_cfg.rbs = {ded_prb_ratio * nof_prbs / 100, min_prb, max_prb};
+
+          // STEP 2: Bridge E2 RRM policy updates to Phase 1 slice_prb_policy storage.
+          // Update cell-level slice PRB quota policy.
+          if (cell.slice_mgr != nullptr) {
+            logger.info("[STEP2-VALIDATION] Updating slice-level PRB policy: SST={} min={}% max={}% ded={}%",
+                        policy_member.s_nssai.sst.value(),
+                        min_prb_ratio,
+                        max_prb_ratio,
+                        ded_prb_ratio);
+            cell.slice_mgr->update_slice_policy(policy_member, min_prb_ratio, max_prb_ratio, ded_prb_ratio);
+          } else {
+            logger.warning("[STEP2-VALIDATION] slice_mgr is nullptr for cell {}. Cannot update slice policy.",
+                           fmt::underlying(cell_index));
+          }
+
           break;
         }
       }

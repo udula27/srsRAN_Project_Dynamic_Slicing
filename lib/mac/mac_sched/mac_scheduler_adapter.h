@@ -31,6 +31,9 @@
 
 namespace srsran {
 
+// Forward declaration for E2 slice PRB policy integration.
+class cell_slice_resource_manager;
+
 /// \brief Interface from MAC to a scheduler implementation.
 class mac_scheduler_adapter : public mac_scheduler_configurator,
                               public mac_scheduler_ce_info_handler,
@@ -55,6 +58,11 @@ public:
   /// \brief Gets the positioning measurement handler.
   /// \return Positioning measurement handler.
   virtual mac_positioning_measurement_handler& get_positioning_handler() = 0;
+
+  /// \brief Get slice resource manager for a cell (for E2 integration).
+  /// \param cell_index DU-specific index of the cell.
+  /// \return Pointer to slice resource manager, or nullptr if cell doesn't exist.
+  virtual cell_slice_resource_manager* get_cell_slice_resource_manager(du_cell_index_t cell_index) = 0;
 };
 
 } // namespace srsran

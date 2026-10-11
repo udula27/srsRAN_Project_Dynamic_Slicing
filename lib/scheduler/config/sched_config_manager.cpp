@@ -284,6 +284,11 @@ void sched_config_manager::handle_ue_config_complete(du_ue_index_t ue_index, std
       cell_metrics.handle_ue_reconfiguration(ue_index);
     }
 
+    // Phase 1C: Update metrics handler with slice assignment
+    if (next_cfg->s_nssai().has_value()) {
+      cell_metrics.handle_ue_slice_assignment(ue_index, next_cfg->s_nssai());
+    }
+
     // Stores new UE config and deletes old config.
     ue_cfg_list[ue_index].swap(next_cfg);
     if (not ues_to_rem.try_push(std::move(next_cfg))) {

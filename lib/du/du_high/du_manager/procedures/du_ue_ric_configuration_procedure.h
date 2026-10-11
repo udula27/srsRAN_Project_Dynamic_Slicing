@@ -26,6 +26,7 @@
 #include "srsran/du/du_high/du_manager/du_configurator.h"
 #include "srsran/mac/mac_ue_configurator.h"
 #include "srsran/support/async/manual_event.h"
+#include "srsran/mac/mac_cell_manager.h"
 
 namespace srsran {
 namespace srs_du {
@@ -42,10 +43,13 @@ public:
   const char* name() const { return "UE RIC configuration"; }
 
 private:
-  manual_event<du_mac_sched_control_config_response>& dispatch_ue_config_task();
+  // Cell-level path: build and populate cell_reconf_req.
+  // Returns false if the request is invalid.
+  bool build_cell_level_reconfig();
 
-  // Task run from within the UE task loop.
-  async_task<mac_ue_reconfiguration_response> handle_mac_config();
+  // UE-level path.
+  manual_event<du_mac_sched_control_config_response>& dispatch_ue_config_task();
+  async_task<mac_ue_reconfiguration_response>         handle_mac_config();
 
   const du_mac_sched_control_config request;
   du_ue_manager_repository&         ue_mng;
@@ -53,7 +57,12 @@ private:
 
   du_ue* ue = nullptr;
 
+  // UE-level completion event.
   manual_event<du_mac_sched_control_config_response> ue_config_completed;
+
+  // Cell-level MAC cell reconfigure request/response.
+  mac_cell_reconfig_request  cell_reconf_req;
+  mac_cell_reconfig_response cell_reconf_resp;
 };
 
 } // namespace srs_du

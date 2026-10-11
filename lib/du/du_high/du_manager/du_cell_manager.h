@@ -27,6 +27,10 @@
 #include "srsran/ran/du_types.h"
 
 namespace srsran {
+
+// Forward declaration for E2 slice PRB policy integration.
+class cell_slice_resource_manager;
+
 namespace srs_du {
 
 struct du_cell_param_config_request;
@@ -41,6 +45,8 @@ struct du_cell_context {
   mac_cell_sys_info_config si_cfg;
   /// Current cell state.
   state_t state;
+  /// Pointer to cell slice resource manager (for E2 slice-level PRB policy updates).
+  cell_slice_resource_manager* slice_mgr = nullptr;
 };
 
 /// Result of the reconfiguration of a DU cell.
@@ -116,6 +122,13 @@ public:
 
   /// Remove all cell configurations.
   void remove_all_cells();
+
+  /// STEP 3: Set slice resource manager pointer for E2 integration.
+  void set_slice_mgr(du_cell_index_t cell_index, cell_slice_resource_manager* slice_mgr)
+  {
+    assert_cell_exists(cell_index);
+    cells[cell_index]->slice_mgr = slice_mgr;
+  }
 
 private:
   void assert_cell_exists(du_cell_index_t cell_index) const

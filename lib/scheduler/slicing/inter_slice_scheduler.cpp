@@ -28,6 +28,30 @@
 
 using namespace srsran;
 
+namespace {
+
+static bool snssai_compatible(const s_nssai_t& lhs, const s_nssai_t& rhs)
+{
+  // SST must always match.
+  if (lhs.sst != rhs.sst) {
+    return false;
+  }
+  // Exact SD match.
+  if (lhs.sd == rhs.sd) {
+    return true;
+  }
+  // A wildcard/unset SD on EITHER side matches any explicit SD on the other side.
+  // This correctly lets a budget entry keyed by {SST:1, SD:wildcard} match a UE
+  // whose S-NSSAI is {SST:1, SD:0x1}, while keeping {SST:2, SD:0x1} and
+  // {SST:2, SD:0x2} strictly isolated from each other when both have explicit SDs.
+  const auto is_no_sd = [](const s_nssai_t& snssai) {
+    return !snssai.sd.is_set() || snssai.sd.value() == 0 || snssai.sd.value() == 0xFFFFFF;
+  };
+  return is_no_sd(lhs) || is_no_sd(rhs);
+}
+
+} // namespace
+
 inter_slice_scheduler::inter_slice_scheduler(const cell_configuration& cell_cfg_, ue_repository& ues_) :
   cell_cfg(cell_cfg_), logger(srslog::fetch_basic_logger("SCHED")), ues(ues_)
 {
@@ -90,8 +114,12 @@ inter_slice_scheduler::inter_slice_scheduler(const cell_configuration& cell_cfg_
   }
 }
 
-void inter_slice_scheduler::slot_indication(slot_point slot_tx, const cell_resource_allocator& res_grid)
+void inter_slice_scheduler::slot_indication(slot_point                            slot_tx,
+                                            const cell_resource_allocator&         res_grid,
+                                            const std::map<s_nssai_t, unsigned>& live_remaining_rbs_)
 {
+  live_remaining_rbs = live_remaining_rbs_;
+
   // Update the context of each slice.
   if (not current_slot.valid()) {
     // First call.
@@ -122,22 +150,28 @@ void inter_slice_scheduler::slot_indication(slot_point slot_tx, const cell_resou
   const bool pdsch_enabled =
       cell_cfg.expert_cfg.ue.enable_csi_rs_pdsch_multiplexing or res_grid[0].result.dl.csi_rs.empty();
   for (const auto& slice : slices) {
-    if (not pdsch_enabled or slice.inst.pdsch_rb_count >= slice.inst.cfg.rbs.max()) {
+    unsigned max_rbs_allowed = slice.inst.cfg.rbs.max();
+    if (auto rem_budget = get_live_remaining_budget(slice.inst); rem_budget.has_value()) {
+      max_rbs_allowed = std::min(max_rbs_allowed, rem_budget.value());
+    }
+
+    if (not pdsch_enabled or max_rbs_allowed == 0 or slice.inst.pdsch_rb_count >= max_rbs_allowed) {
       // PDSCH is disabled or slice already reached max RBs. We can skip this slice.
       continue;
     }
 
+    const unsigned min_rbs_allowed = std::min(slice.inst.cfg.rbs.min(), max_rbs_allowed);
+
     // When minRB > 0, minRB != maxRB, sliceRBs < min_RB, we create two candidates. One with limit set to minRB
     // with high priority, and another one with limit set to maxRB with normal priority.
     interval<unsigned> rb_lims;
-    if (slice.inst.pdsch_rb_count < slice.inst.cfg.rbs.min() and slice.inst.cfg.rbs.min() > 0 and
-        slice.inst.cfg.rbs.shared() > 0) {
-      rb_lims         = {slice.inst.pdsch_rb_count, slice.inst.cfg.rbs.min()};
+    if (slice.inst.pdsch_rb_count < min_rbs_allowed and min_rbs_allowed > 0 and min_rbs_allowed < max_rbs_allowed) {
+      rb_lims         = {slice.inst.pdsch_rb_count, min_rbs_allowed};
       const auto prio = slice.get_prio(true, slot_tx, slot_tx, rb_lims.stop());
       dl_prio_queue.push(slice_candidate_context{slice.inst.id, prio, rb_lims, slot_tx});
-      rb_lims = {slice.inst.cfg.rbs.min(), slice.inst.cfg.rbs.max()};
+      rb_lims = {min_rbs_allowed, max_rbs_allowed};
     } else {
-      rb_lims = {slice.inst.pdsch_rb_count, slice.inst.cfg.rbs.max()};
+      rb_lims = {slice.inst.pdsch_rb_count, max_rbs_allowed};
     }
     const auto prio = slice.get_prio(true, slot_tx, slot_tx, rb_lims.stop());
     dl_prio_queue.push(slice_candidate_context{slice.inst.id, prio, rb_lims, slot_tx});
@@ -154,11 +188,18 @@ void inter_slice_scheduler::slot_indication(slot_point slot_tx, const cell_resou
       const cell_slot_resource_allocator& pusch_alloc = res_grid[pusch_delay];
       slot_point                          pusch_slot  = slot_tx + pusch_delay;
 
-      unsigned pusch_rb_count = slice.inst.nof_pusch_rbs_allocated(pusch_slot);
-      if (pusch_rb_count >= slice.inst.cfg.rbs.max()) {
+      unsigned pusch_rb_count  = slice.inst.nof_pusch_rbs_allocated(pusch_slot);
+      unsigned max_rbs_allowed = slice.inst.cfg.rbs.max();
+      if (auto rem_budget = get_live_remaining_budget(slice.inst); rem_budget.has_value()) {
+        max_rbs_allowed = std::min(max_rbs_allowed, rem_budget.value());
+      }
+
+      if (max_rbs_allowed == 0 || pusch_rb_count >= max_rbs_allowed) {
         // Slice reached max RBs.
         continue;
       }
+
+      const unsigned min_rbs_allowed = std::min(slice.inst.cfg.rbs.min(), max_rbs_allowed);
 
       if (allocated_k2.has_value() and allocated_k2.value() == pusch_time_domain_list[pusch_td_res_idx].k2) {
         // There is already a slice candidate for the same k2. Adding another candidate for the same k2 and different
@@ -178,14 +219,13 @@ void inter_slice_scheduler::slot_indication(slot_point slot_tx, const cell_resou
       // When minRB > 0, minRB != maxRB, sliceRBs < min_RB, we create two candidates. One with limit set to minRB
       // with high priority, and another one with limit set to maxRB with normal priority.
       interval<unsigned> rb_lims;
-      if (slice.inst.cfg.rbs.min() > 0 and slice.inst.cfg.rbs.shared() > 0 and
-          pusch_rb_count < slice.inst.cfg.rbs.min()) {
-        rb_lims         = {pusch_rb_count, slice.inst.cfg.rbs.min()};
+      if (min_rbs_allowed > 0 and min_rbs_allowed < max_rbs_allowed and pusch_rb_count < min_rbs_allowed) {
+        rb_lims         = {pusch_rb_count, min_rbs_allowed};
         const auto prio = slice.get_prio(false, slot_tx, pusch_slot, rb_lims.stop());
         ul_prio_queue.push(slice_candidate_context{slice.inst.id, prio, rb_lims, pusch_slot});
-        rb_lims = {slice.inst.cfg.rbs.min(), slice.inst.cfg.rbs.max()};
+        rb_lims = {min_rbs_allowed, max_rbs_allowed};
       } else {
-        rb_lims = {pusch_rb_count, slice.inst.cfg.rbs.max()};
+        rb_lims = {pusch_rb_count, max_rbs_allowed};
       }
       const auto prio = slice.get_prio(false, slot_tx, pusch_slot, rb_lims.stop());
       allocated_k2.emplace(pusch_time_domain_list[pusch_td_res_idx].k2);
@@ -230,7 +270,6 @@ void inter_slice_scheduler::config_applied(du_ue_index_t ue_idx)
 {
   ue* u = fetch_ue_to_update(ue_idx);
   if (u == nullptr) {
-    logger.error("Config applied to a UE that is inactive or in fallback");
     return;
   }
 
@@ -241,12 +280,84 @@ void inter_slice_scheduler::config_applied(du_ue_index_t ue_idx)
 void inter_slice_scheduler::add_impl(ue& u)
 {
   const ue_configuration& ue_cfg = *u.ue_cfg_dedicated();
+
   for (logical_channel_config_ptr lc_cfg : *ue_cfg.logical_channels()) {
-    ran_slice_instance& sl_inst = get_slice(*lc_cfg);
-    if (lc_cfg->lcid != LCID_SRB0 and not sl_inst.get_ues().contains(u.ue_index)) {
-      get_policy(sl_inst.id).add_ue(u.ue_index);
+    ran_slice_instance* sl_inst = nullptr;
+    if (lc_cfg->lcid < LCID_MIN_DRB) {
+      sl_inst = &get_slice(*lc_cfg);
+    } else {
+      // -----------------------------------------------------------------------
+      // Try 1: exact match — both PLMN and full S-NSSAI (SST + SD) must be equal.
+      // -----------------------------------------------------------------------
+      auto drb_it = std::find_if(slices.begin(), slices.end(), [&lc_cfg](const ran_slice_sched_context& slice) {
+        return slice.inst.id.value() >= 2 and slice.inst.cfg.rrc_member == lc_cfg->rrm_policy;
+      });
+      if (drb_it == slices.end()) {
+        // Diagnose why Try 1 failed for every configured custom slice.
+        for (const auto& sc : slices) {
+          if (sc.inst.id.value() < 2) continue;
+        }
+      }
+
+      // -----------------------------------------------------------------------
+      // Try 2: compatible S-NSSAI match on the DRB's RRM policy.
+      // Allows SD wildcard (0 / 0xFFFFFF / unset) to match an explicit SD.
+      // -----------------------------------------------------------------------
+      if (drb_it == slices.end()) {
+        drb_it = std::find_if(slices.begin(), slices.end(), [&lc_cfg](const ran_slice_sched_context& slice) {
+          return slice.inst.id.value() >= 2 and
+                 snssai_compatible(slice.inst.cfg.rrc_member.s_nssai, lc_cfg->rrm_policy.s_nssai);
+        });
+      }
+
+      // -----------------------------------------------------------------------
+      if (drb_it == slices.end()) {
+        if (!ue_cfg.s_nssai().has_value()) {
+          // ue_cfg.s_nssai() is nullopt — fall through to DEFAULT_DRB.
+        } else {
+          drb_it = std::find_if(slices.begin(), slices.end(), [&ue_cfg](const ran_slice_sched_context& slice) {
+            return slice.inst.id.value() >= 2 and snssai_compatible(slice.inst.cfg.rrc_member.s_nssai, ue_cfg.s_nssai().value());
+          });
+        }
+      }
+
+      if (drb_it != slices.end()) {
+        sl_inst = &drb_it->inst;
+      } else {
+        // S-NSSAI.  If yes, placing the unresolved DRB in DEFAULT_DRB (id=1) would bypass ALL
+        // per-slice PRB caps (DEFAULT_DRB has max=cell_max_rbs and id<2 skips every budget gate).
+        // That is the root cause of cross-slice fair-sharing in multi-UE multi-slice scenarios.
+        //
+        // Correct behaviour per 3GPP TS 28.541 / O-RAN WG3:
+        //  - If a custom slice exists for this UE's S-NSSAI, the DRB MUST stay in that slice's
+        //    PRB pool.  A mis-match here means a config/timing anomaly — block the DRB attach so
+        //    that the slice budgets remain strictly isolated.  SRBs (LCID < LCID_MIN_DRB) are
+        //    never affected; they always go to the SRB slice and are unconditionally allowed.
+        //  - If no custom slice is configured for this UE's S-NSSAI (e.g. a plain non-sliced UE
+        //    on the default bearer), falling back to DEFAULT_DRB is legitimate.
+        const bool any_custom_slice_for_ue =
+            ue_cfg.s_nssai().has_value() &&
+            std::any_of(slices.begin(), slices.end(), [&ue_cfg](const ran_slice_sched_context& sc) {
+              return sc.inst.id.value() >= 2 &&
+                     snssai_compatible(sc.inst.cfg.rrc_member.s_nssai, ue_cfg.s_nssai().value());
+            });
+
+        if (any_custom_slice_for_ue) {
+          // A custom slice IS registered for this UE but matching failed above.  Dropping the
+          // DRB from the scheduling loop preserves per-slice PRB isolation.
+          continue;
+        }
+
+        // No custom slice is configured for this UE's S-NSSAI: legitimate DEFAULT_DRB usage.
+        sl_inst = &slices[DEFAULT_DRB_RAN_SLICE_ID.value()].inst;
+      }
     }
-    sl_inst.get_ues().add_logical_channel(u, lc_cfg->lcid, lc_cfg->lc_group);
+
+    srsran_assert(sl_inst != nullptr, "Slice instance must be resolved before LC assignment");
+    if (lc_cfg->lcid != LCID_SRB0 and not sl_inst->get_ues().contains(u.ue_index)) {
+      get_policy(sl_inst->id).add_ue(u.ue_index);
+    }
+    sl_inst->get_ues().add_logical_channel(u, lc_cfg->lcid, lc_cfg->lc_group);
   }
 }
 
@@ -254,7 +365,6 @@ ue* inter_slice_scheduler::fetch_ue_to_update(du_ue_index_t ue_idx) const
 {
   if (not ues.contains(ue_idx)) {
     // UE should be added to the repository at this stage.
-    logger.warning("ue={}: Not configuring UE to slice scheduler. Cause: No UE context found", fmt::underlying(ue_idx));
     return nullptr;
   }
 
@@ -269,9 +379,6 @@ ue* inter_slice_scheduler::fetch_ue_to_update(du_ue_index_t ue_idx) const
   // If UE is in fallback mode, we do not add it to the slice scheduler.
   const ue_cell* ue_cc = u.find_cell(cell_cfg.cell_index);
   if (ue_cc == nullptr) {
-    logger.warning("ue={}: Not adding UE to slice scheduler. Cause: No UE context found in cell {}",
-                   fmt::underlying(ue_cfg.ue_index),
-                   fmt::underlying(cell_cfg.cell_index));
     return nullptr;
   }
   if (ue_cc->is_in_fallback_mode()) {
@@ -292,8 +399,7 @@ ran_slice_instance& inter_slice_scheduler::get_slice(const logical_channel_confi
     return slice.inst.cfg.rrc_member == lc_cfg.rrm_policy;
   });
   if (it == slices.end() or lc_cfg.rrm_policy == rrm_policy_member{}) {
-    // Slice with the provided RRM policy member was not found. Return default DRB slice.
-    return slices[DEFAULT_DRB_RAN_SLICE_ID.value()].inst;
+    return slices[SRB_RAN_SLICE_ID.value()].inst;
   }
   return it->inst;
 }
@@ -311,6 +417,11 @@ inter_slice_scheduler::get_next_candidate()
     slot_point               pxsch_slot   = prio_queue.top().slot_tx;
     prio_queue.pop();
 
+    if (auto rem_budget = get_live_remaining_budget(chosen_slice.inst); rem_budget.has_value() && rem_budget.value() == 0) {
+      // Budget is exhausted for this custom slice in current TTI.
+      continue;
+    }
+
     // Check if two consecutive candidates belong to the same slice. If so, we can combine them into a single candidate.
     if (not prio_queue.empty() and prio_queue.top().id == chosen_slice.inst.id and
         prio_queue.top().slot_tx == pxsch_slot) {
@@ -326,11 +437,9 @@ inter_slice_scheduler::get_next_candidate()
     const unsigned cell_max_rbs      = IsDownlink ? cell_cfg.dl_cfg_common.init_dl_bwp.generic_params.crbs.length()
                                                   : cell_cfg.ul_cfg_common.init_ul_bwp.generic_params.crbs.length();
     const unsigned rem_rbs           = cell_max_rbs - count_rbs;
-    const unsigned max_rbs_candidate = std::min(rb_lims.stop(), rem_rbs);
-    if (rb_lims.start() < chosen_slice.inst.cfg.rbs.min()) {
-      // If we are still scheduling dedicated+prioritised resources, we update the sum of dedicated RBs allocated for
-      // this slot with the dedicated resources of this slice candidate.
-      count_rbs += chosen_slice.inst.cfg.rbs.dedicated();
+    unsigned max_rbs_candidate = std::min(rb_lims.stop(), rem_rbs);
+    if (auto rem_budget = get_live_remaining_budget(chosen_slice.inst); rem_budget.has_value()) {
+      max_rbs_candidate = std::min(max_rbs_candidate, rem_budget.value());
     }
     if (max_rbs_candidate == 0) {
       // We can skip this candidate, as there is no more RB space for it.
@@ -343,6 +452,11 @@ inter_slice_scheduler::get_next_candidate()
       // Note: This can happen when the scheduler could not fill up to minRB limit of the first candidate when
       // minRB > 0. At this point, we should skip the candidate {minRB, maxRB} as well.
       continue;
+    }
+
+    if (rb_lims.start() < chosen_slice.inst.cfg.rbs.min()) {
+      // Count dedicated resources only for candidates that are actually schedulable.
+      count_rbs += chosen_slice.inst.cfg.rbs.dedicated();
     }
 
     // Return the candidate.
@@ -361,22 +475,113 @@ std::optional<ul_ran_slice_candidate> inter_slice_scheduler::get_next_ul_candida
   return get_next_candidate<false>();
 }
 
+std::optional<unsigned> inter_slice_scheduler::get_live_remaining_budget(const ran_slice_instance& slice_inst) const
+{
+  if (slice_inst.id.value() < 2) {
+    return std::nullopt;
+  }
+
+  auto it = live_remaining_rbs.find(slice_inst.cfg.rrc_member.s_nssai);
+  if (it != live_remaining_rbs.end()) {
+    return it->second;
+  }
+
+  auto compatible_it = std::find_if(
+      live_remaining_rbs.begin(), live_remaining_rbs.end(), [&slice_inst](const auto& kv) {
+        return snssai_compatible(kv.first, slice_inst.cfg.rrc_member.s_nssai);
+      });
+  if (compatible_it != live_remaining_rbs.end()) {
+    return compatible_it->second;
+  }
+
+  // No exact or compatible entry found.
+  return 0;
+}
+
+void inter_slice_scheduler::rebind_active_ues_to_slices()
+{
+  std::vector<du_ue_index_t> active_ues;
+  for (const auto& slice : slices) {
+    for (const auto& slice_ue : slice.inst.get_ues()) {
+      active_ues.push_back(slice_ue.ue_index());
+    }
+  }
+
+  std::sort(active_ues.begin(), active_ues.end());
+  active_ues.erase(std::unique(active_ues.begin(), active_ues.end()), active_ues.end());
+
+  unsigned rebound_count = 0;
+  for (du_ue_index_t ue_idx : active_ues) {
+    ue* u = ues.find(ue_idx);
+    if (u == nullptr || u->ue_cfg_dedicated() == nullptr) {
+      continue;
+    }
+
+    const ue_configuration& ue_cfg = *u->ue_cfg_dedicated();
+    if (!ue_cfg.s_nssai().has_value()) {
+      continue;
+    }
+
+    const ue_cell* ue_cc = u->find_cell(cell_cfg.cell_index);
+    if (ue_cc == nullptr) {
+      continue;
+    }
+
+    // Determine whether the UE is actually scheduled in a custom slice whose S-NSSAI
+    // matches the UE's AMF-assigned S-NSSAI.  We inspect the slice repositories directly
+    // rather than relying on ue_cc->get_slice_assignment(), which stores the UE's *own*
+    // S-NSSAI (set from ue_ded_cfg->s_nssai() in ue.cpp) and thus trivially matches
+    // itself — causing UEs stuck in DEFAULT_DRB to never be detected as needing rebind.
+    bool in_correct_custom_slice = false;
+    for (const auto& slice : slices) {
+      if (slice.inst.id.value() < 2) {
+        // SRB and DEFAULT_DRB: a UE's presence here does not count as correct placement.
+        continue;
+      }
+      if (!slice.inst.get_ues().contains(ue_idx)) {
+        continue;
+      }
+      if (snssai_compatible(slice.inst.cfg.rrc_member.s_nssai, ue_cfg.s_nssai().value())) {
+        in_correct_custom_slice = true;
+        break;
+      }
+    }
+    if (in_correct_custom_slice) {
+      continue;
+    }
+
+    rem_ue(ue_idx);
+    if (ue* refreshed = fetch_ue_to_update(ue_idx); refreshed != nullptr) {
+      add_impl(*refreshed);
+      rebound_count++;
+    } else {
+      // UE was removed from all slices but could not be re-added.
+    }
+  }
+}
+
 void inter_slice_scheduler::handle_slice_reconfiguration_request(const du_cell_slice_reconfig_request& req)
 {
   for (const auto& rrm : req.rrm_policies) {
     bool found = false;
     for (auto& slice : slices) {
-      if (slice.inst.cfg.rrc_member == rrm.rrc_member) {
+      // Use compatible S-NSSAI matching (wildcard SD on either side) so that SD=0 (explicit zero)
+      // and SD=0xFFFFFF (no SD / default) both match any slice configured without an explicit SD.
+      // PLMN must still match exactly. Only update custom slices (id>=2); never touch default SRB/DRB.
+      if (slice.inst.id.value() >= 2 &&
+          slice.inst.cfg.rrc_member.plmn_id == rrm.rrc_member.plmn_id &&
+          snssai_compatible(slice.inst.cfg.rrc_member.s_nssai, rrm.rrc_member.s_nssai)) {
         found              = true;
-        slice.inst.cfg.rbs = rrm.rbs;
+        const unsigned cell_max_rbs = cell_cfg.dl_cfg_common.init_dl_bwp.generic_params.crbs.length();
+        slice.inst.cfg.rbs = {std::min(rrm.rbs.dedicated(), cell_max_rbs),
+                              std::min(rrm.rbs.min(), cell_max_rbs),
+                              std::min(rrm.rbs.max(), cell_max_rbs)};
       }
     }
-
-    if (not found) {
-      logger.warning(
-          "No slice RRM policy found for {} in cell {}.", rrm.rrc_member, fmt::underlying(cell_cfg.cell_index));
-    }
+    (void)found;
   }
+
+  rebind_active_ues_to_slices();
 }
 
 inter_slice_scheduler::priority_type inter_slice_scheduler::ran_slice_sched_context::get_prio(bool       is_dl,

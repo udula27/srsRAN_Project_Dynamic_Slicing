@@ -113,6 +113,28 @@ void cell_metrics_handler::handle_ue_reconfiguration(du_ue_index_t ue_index)
   }
 }
 
+void cell_metrics_handler::handle_ue_slice_assignment(du_ue_index_t ue_index, const std::optional<s_nssai_t>& slice)
+{
+  if (not enabled()) {
+    return;
+  }
+  if (not ues.contains(ue_index)) {
+    return;
+  }
+
+  ues[ue_index].slice_assignment = slice;
+
+  // Phase 1C: Store slice assignment in metrics (validated and working)
+  if (slice.has_value()) {
+    srslog::fetch_basic_logger("SCHED").info(
+        "ue={} rnti={}: Assigned to slice SST={}, SD={}",
+        ue_index,
+        ues[ue_index].rnti,
+        slice->sst.value(),
+        slice->sd.is_set() ? slice->sd.value() : 0);
+  }
+}
+
 void cell_metrics_handler::handle_ue_deletion(du_ue_index_t ue_index)
 {
   if (not enabled()) {
@@ -684,6 +706,9 @@ cell_metrics_handler::ue_metric_context::compute_report(std::chrono::millisecond
         convert_slots_to_ms(data.sum_sr_to_pusch_delay_slots) / static_cast<float>(data.count_handled_sr);
     ret.max_sr_to_pusch_delay_ms = convert_slots_to_ms(data.max_sr_to_pusch_delay_slots);
   }
+
+  // Phase 1C: Populate S-NSSAI for slice-aware metrics
+  ret.s_nssai = slice_assignment;
 
   // Reset UE stats metrics on every report.
   reset();

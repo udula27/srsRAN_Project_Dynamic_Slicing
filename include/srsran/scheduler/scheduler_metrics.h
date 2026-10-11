@@ -25,6 +25,7 @@
 #include "srsran/ran/du_types.h"
 #include "srsran/ran/pci.h"
 #include "srsran/ran/rnti.h"
+#include "srsran/ran/s_nssai.h"
 #include "srsran/ran/sch/sch_mcs.h"
 #include "srsran/ran/slot_point.h"
 #include "srsran/support/math/stats.h"
@@ -115,6 +116,8 @@ struct scheduler_ue_metrics {
   sample_statistics<unsigned> dl_ri_stats;
   /// UL RI statistics over the metrics report interval.
   sample_statistics<unsigned> ul_ri_stats;
+  /// Slice information for this UE (S-NSSAI). Used for E2SM-KPM slice-level metrics.
+  std::optional<s_nssai_t> s_nssai;
 };
 
 /// \brief Event that occurred in the cell of the scheduler.

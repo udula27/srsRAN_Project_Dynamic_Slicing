@@ -34,6 +34,7 @@ struct cell_resource_allocator;
 class sched_ue_configuration_handler;
 class scheduler_event_logger;
 class cell_metrics_handler;
+class cell_slice_resource_manager;  // Forward declaration for E2 slice PRB policy integration.
 
 /// Request to create a new cell handler in the UE scheduler.
 struct ue_cell_scheduler_creation_request {
@@ -78,6 +79,9 @@ public:
 
   /// Return UE configurator.
   virtual sched_ue_configuration_handler& get_ue_configurator() = 0;
+
+  /// STEP 3: Get pointer to slice resource manager for DU manager E2 integration.
+  virtual cell_slice_resource_manager* get_slice_resource_manager() = 0;
 
   /// Called when cell is activated.
   virtual void start() = 0;

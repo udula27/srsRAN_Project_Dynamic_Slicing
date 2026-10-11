@@ -34,6 +34,8 @@
 #include "ue_fallback_scheduler.h"
 #include "ue_scheduler.h"
 #include "srsran/scheduler/config/scheduler_expert_config.h"
+#include "srsran/scheduler/config/slice_rrm_policy_config.h"
+#include <map>
 #include <mutex>
 
 namespace srsran {
@@ -55,10 +57,32 @@ private:
 
   void run_slot_impl(slot_point sl_tx);
 
-  void run_sched_strategy(du_cell_index_t cell_index);
+  void run_sched_strategy(du_cell_index_t                        cell_index,
+                          std::map<s_nssai_t, slice_prb_budget>& dl_slice_budgets,
+                          std::map<s_nssai_t, slice_prb_budget>& ul_slice_budgets);
 
   /// Counts the number of PUCCH grants that are allocated for a given user at a specific slot.
   void update_harq_pucch_counter(cell_resource_allocator& cell_alloc);
+
+  /// Compute slice budgets for this slot based on UE demands and policy limits.
+  /// Called once per slot before UE allocation loop.
+  /// Also consults slice_sched for the authoritative xApp-updated cfg.rbs.max() per slice.
+  std::map<s_nssai_t, slice_prb_budget>
+  compute_slice_budgets_for_slot(slot_point sl_tx,
+                                 const cell_resource_allocator& res_alloc,
+                                 cell_slice_resource_manager&   slice_mgr,
+                                 const inter_slice_scheduler&   slice_sched);
+
+  /// Check if slice has PRB budget remaining for a UE allocation.
+  bool slice_has_prb_budget(const s_nssai_t& snssai,
+                            unsigned requested_prbs,
+                            const std::map<s_nssai_t, slice_prb_budget>& budgets) const;
+
+  /// Decrement slice PRB budget after successful UE allocation.
+  void consume_slice_prbs(const s_nssai_t& snssai,
+                          unsigned allocated_prbs,
+                          std::map<s_nssai_t, slice_prb_budget>& budgets,
+                          cell_slice_resource_manager& slice_mgr);
 
   struct cell_context : public ue_cell_scheduler {
     ue_scheduler_impl& parent;
@@ -86,6 +110,9 @@ private:
     /// SRS scheduler
     srs_scheduler_impl srs_sched;
 
+    /// Cell-level slice resource manager for PRB quota enforcement.
+    std::unique_ptr<cell_slice_resource_manager> slice_mgr;
+
     /// Cell-specific event manager.
     std::unique_ptr<ue_cell_event_manager> ev_mng;
 
@@ -108,6 +135,9 @@ private:
     scheduler_cell_positioning_handler&           get_positioning_handler() override { return *ev_mng; }
     scheduler_dl_buffer_state_indication_handler& get_dl_buffer_state_indication_handler() override { return *ev_mng; }
     sched_ue_configuration_handler&               get_ue_configurator() override { return *ev_mng; }
+
+    /// STEP 3: Get pointer to slice resource manager for DU manager E2 integration.
+    cell_slice_resource_manager* get_slice_resource_manager() override { return slice_mgr.get(); }
 
     void start() override { parent.do_start_cell(cell_res_alloc->cfg.cell_index); }
 

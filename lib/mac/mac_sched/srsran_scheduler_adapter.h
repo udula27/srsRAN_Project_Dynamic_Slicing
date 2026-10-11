@@ -113,6 +113,12 @@ public:
     return cell_handlers[cell_index];
   }
 
+  /// E2 Integration - Get slice resource manager for a cell.
+  cell_slice_resource_manager* get_cell_slice_resource_manager(du_cell_index_t cell_index) override
+  {
+    return sched_impl->get_cell_slice_resource_manager(cell_index);
+  }
+
 private:
   class cell_handler final : public mac_cell_control_information_handler
   {

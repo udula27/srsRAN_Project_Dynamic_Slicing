@@ -26,6 +26,7 @@
 #include "srsran/adt/flat_map.h"
 #include "srsran/adt/slotted_array.h"
 #include "srsran/adt/slotted_vector.h"
+#include "srsran/ran/s_nssai.h"
 #include "srsran/ran/slot_point.h"
 #include "srsran/scheduler/scheduler_configurator.h"
 #include "srsran/scheduler/scheduler_dl_buffer_state_indication_handler.h"
@@ -121,6 +122,8 @@ class cell_metrics_handler final : public sched_metrics_ue_configurator
     std::optional<float>                   last_dl_olla;
     std::optional<float>                   last_ul_olla;
     non_persistent_data                    data;
+    /// Slice assignment for this UE (Phase 1C)
+    std::optional<s_nssai_t>               slice_assignment;
 
     scheduler_ue_metrics compute_report(std::chrono::milliseconds metric_report_period, unsigned nof_slots_per_sf);
     void                 reset();
@@ -257,6 +260,9 @@ public:
 
   /// \brief Called when the cell is stopped. This will trigger a cell stop report.
   void handle_cell_deactivation();
+
+  /// \brief Update UE slice assignment for metrics tagging (Phase 1C).
+  void handle_ue_slice_assignment(du_ue_index_t ue_index, const std::optional<s_nssai_t>& slice);
 
 private:
   void handle_pucch_sinr(ue_metric_context& u, float sinr);

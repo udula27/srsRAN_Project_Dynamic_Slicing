@@ -837,7 +837,7 @@ ue_configuration::ue_configuration(du_ue_index_t                         ue_inde
 }
 
 ue_configuration::ue_configuration(const ue_configuration& other) :
-  ue_index(other.ue_index), crnti(other.crnti), lc_list(other.lc_list)
+  ue_index(other.ue_index), crnti(other.crnti), lc_list(other.lc_list), ue_drx_cfg(other.ue_drx_cfg), ue_s_nssai(other.ue_s_nssai)
 {
   // Update UE dedicated cell config.
   for (const std::unique_ptr<ue_cell_configuration>& cell_cfg : other.du_cells) {
@@ -857,6 +857,9 @@ void ue_configuration::update(const cell_common_configuration_list& common_cells
 
   // Update DRX config.
   ue_drx_cfg = cfg_req.drx_cfg;
+
+  // Phase 1C: Update S-NSSAI (Slice assignment) for this UE
+  ue_s_nssai = cfg_req.s_nssai;
 
   // Update UE dedicated cell configs.
   if (cfg_req.cells.has_value()) {

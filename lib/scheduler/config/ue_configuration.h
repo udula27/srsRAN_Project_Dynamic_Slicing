@@ -334,6 +334,9 @@ public:
   /// Get DRX configuration for the UE cell group.
   const std::optional<drx_config>& drx_cfg() const { return ue_drx_cfg; }
 
+  /// Get S-NSSAI (Slice assignment) for this UE (Phase 1C).
+  const std::optional<s_nssai_t>& s_nssai() const { return ue_s_nssai; }
+
 private:
   // List of configured logical channels
   logical_channel_config_list_ptr lc_list;
@@ -346,6 +349,9 @@ private:
 
   // DRX config for the UE cell group.
   std::optional<drx_config> ue_drx_cfg;
+
+  // S-NSSAI (Slice assignment) for this UE (Phase 1C).
+  std::optional<s_nssai_t> ue_s_nssai;
 };
 
 } // namespace srsran

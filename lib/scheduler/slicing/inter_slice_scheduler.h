@@ -25,6 +25,7 @@
 #include "../policy/scheduler_policy.h"
 #include "ran_slice_candidate.h"
 #include "ran_slice_instance.h"
+#include <map>
 
 namespace srsran {
 
@@ -41,7 +42,12 @@ public:
   inter_slice_scheduler(const cell_configuration& cell_cfg_, ue_repository& ues_);
 
   /// Reset the state of the slices.
-  void slot_indication(slot_point slot_tx, const cell_resource_allocator& res_grid);
+  void slot_indication(slot_point slot_tx,
+                       const cell_resource_allocator&    res_grid,
+                       const std::map<s_nssai_t, unsigned>& live_remaining_rbs_);
+
+  /// Update per-slice live remaining RBs used to clamp slice candidates at runtime.
+  void set_live_remaining_rbs(const std::map<s_nssai_t, unsigned>& live_remaining_rbs_) { live_remaining_rbs = live_remaining_rbs_; }
 
   /// Update the state of the slice with the provided UE configs.
   void add_ue(du_ue_index_t ue_idx);
@@ -58,6 +64,19 @@ public:
   size_t                         nof_slices() const { return slices.size(); }
   const slice_rrm_policy_config& slice_config(ran_slice_id_t id) const { return slices[id.value()].inst.cfg; }
   scheduler_policy&              get_policy(ran_slice_id_t id) const { return *slices[id.value()].policy; }
+
+  /// Return a map of S-NSSAI → max-PRBs for every CUSTOM slice (id >= 2).
+  /// This is the authoritative source after xApp updates via handle_slice_reconfiguration_request.
+  std::map<s_nssai_t, unsigned> get_custom_slice_max_rbs() const
+  {
+    std::map<s_nssai_t, unsigned> result;
+    for (const auto& sc : slices) {
+      if (sc.inst.id.value() >= 2) {
+        result[sc.inst.cfg.rrc_member.s_nssai] = sc.inst.cfg.rbs.max();
+      }
+    }
+    return result;
+  }
 
   void handle_slice_reconfiguration_request(const du_cell_slice_reconfig_request& slice_reconf_req);
 
@@ -147,6 +166,10 @@ private:
 
   void add_impl(ue& u);
 
+  std::optional<unsigned> get_live_remaining_budget(const ran_slice_instance& slice_inst) const;
+
+  void rebind_active_ues_to_slices();
+
   template <bool IsDownlink>
   std::optional<std::conditional_t<IsDownlink, dl_ran_slice_candidate, ul_ran_slice_candidate>> get_next_candidate();
 
@@ -167,6 +190,13 @@ private:
   // Queue of slice candidates sorted by priority.
   slice_prio_queue dl_prio_queue;
   slice_prio_queue ul_prio_queue;
+
+  // Remaining RBs per full S-NSSAI for current scheduling pass.
+  std::map<s_nssai_t, unsigned> live_remaining_rbs;
+
+  // Strict isolation is now always enforced when a custom slice is configured for the UE's
+  // S-NSSAI.  Unresolved DRBs are skipped (not placed in DEFAULT_DRB) to prevent cross-slice
+  // PRB contamination.  See add_impl() for the full rationale.
 };
 
 } // namespace srsran

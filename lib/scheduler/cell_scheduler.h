@@ -39,6 +39,9 @@
 
 namespace srsran {
 
+// Forward declaration for E2 slice PRB policy integration.
+class cell_slice_resource_manager;
+
 class cell_metrics_handler;
 
 /// \brief This class holds all the resources that are specific to a cell.
@@ -83,6 +86,9 @@ public:
     return ue_sched->get_dl_buffer_state_indication_handler();
   }
   sched_ue_configuration_handler& get_ue_configurator() { return ue_sched->get_ue_configurator(); }
+
+  /// STEP 3: Get pointer to slice resource manager for DU manager E2 integration.
+  cell_slice_resource_manager* get_slice_resource_manager() { return ue_sched->get_slice_resource_manager(); }
 
   const cell_configuration& cell_cfg;
 

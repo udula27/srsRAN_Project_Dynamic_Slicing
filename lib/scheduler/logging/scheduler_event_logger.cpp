@@ -32,13 +32,10 @@ scheduler_event_logger::scheduler_event_logger(du_cell_index_t cell_index_, pci_
   cell_index(cell_index_),
   pci(pci_),
   logger(srslog::fetch_basic_logger("SCHED")),
-  mode(logger.debug.enabled() ? mode_t::debug : (logger.info.enabled() ? mode_t::info : mode_t::none))
+  mode(logger.debug.enabled() ? mode_t::debug : mode_t::none)
 {
   if (mode == debug) {
     fmt::format_to(std::back_inserter(fmtbuf), "\n- Cell creation: idx={} pci={}", fmt::underlying(cell_index), pci);
-  } else if (mode == info) {
-    fmt::format_to(
-        std::back_inserter(fmtbuf), "{}Cell creation idx={} pci={}", separator(), fmt::underlying(cell_index), pci);
   }
 }
 
@@ -46,9 +43,6 @@ void scheduler_event_logger::log_impl()
 {
   if (mode == debug) {
     logger.debug("Processed slot events pci={}:{}", pci, to_c_str(fmtbuf));
-    fmtbuf.clear();
-  } else if (mode == info) {
-    logger.info("Processed slot events pci={}:{}", pci, to_c_str(fmtbuf));
     fmtbuf.clear();
   }
 }

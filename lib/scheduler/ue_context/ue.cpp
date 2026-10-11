@@ -165,6 +165,12 @@ void ue::set_config(const ue_configuration& new_cfg, std::optional<slot_point> m
     auto& ue_cell_inst =
         ue_du_cells[ue_ded_cfg->ue_cell_cfg(to_ue_cell_index(ue_cell_index)).cell_cfg_common.cell_index];
     ue_cells[ue_cell_index] = ue_cell_inst.get();
+
+    // Phase 1C: Set slice assignment when provided.
+    // SAFETY: preserve previous assignment when S-NSSAI is temporarily omitted in reconfig payloads.
+    if (ue_ded_cfg->s_nssai().has_value()) {
+      ue_cell_inst->set_slice_assignment(ue_ded_cfg->s_nssai().value());
+    }
   }
 }
 

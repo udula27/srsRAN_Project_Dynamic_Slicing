@@ -146,5 +146,18 @@ sched_ue_config_request srsran::srs_du::create_scheduler_ue_config_request(const
   sched_cfg.drx_cfg      = ue_res_cfg.cell_group.mcg_cfg.drx_cfg;
   sched_cfg.meas_gap_cfg = ue_res_cfg.meas_gap;
 
+  // Phase 1C: Extract S-NSSAI from first configured DRB for slice-aware metrics
+  if (!ue_res_cfg.drbs.empty()) {
+    const auto& first_drb = *ue_res_cfg.drbs.begin();
+    // S-NSSAI is always present in DRB config
+    s_nssai_t slice_info;
+    slice_info.sst = first_drb.s_nssai.sst;
+    // Only copy SD if it's actually set in the DRB config
+    if (first_drb.s_nssai.sd.is_set()) {
+      slice_info.sd = first_drb.s_nssai.sd;
+    }
+    sched_cfg.s_nssai = slice_info;
+  }
+
   return sched_cfg;
 }

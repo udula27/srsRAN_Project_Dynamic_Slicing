@@ -79,6 +79,9 @@ public:
   void handle_positioning_measurement_request(const positioning_measurement_request& req) override;
   void handle_positioning_measurement_stop(const positioning_measurement_stop_request& req) override;
 
+  // E2 Integration - Get slice resource manager for a cell.
+  cell_slice_resource_manager* get_cell_slice_resource_manager(du_cell_index_t cell_index) override;
+
 private:
   const scheduler_expert_config expert_params;
 

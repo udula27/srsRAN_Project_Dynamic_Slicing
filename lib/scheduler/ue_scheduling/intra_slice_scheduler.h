@@ -28,6 +28,13 @@
 
 namespace srsran {
 
+/// Per-slot slice PRB budget tracking for enforcement.
+struct slice_prb_budget {
+  unsigned allocated_prbs = 0;  // PRBs already allocated this slot
+  unsigned budget_prbs = 0;     // Max PRBs allowed this slot
+  bool guaranteed_met = false;   // Has minimum been allocated?
+};
+
 class pdcch_resource_allocator;
 class scheduler_policy;
 class ue_repository;
@@ -52,10 +59,10 @@ public:
   void post_process_results();
 
   /// Schedule DL grants for a given slice candidate.
-  void dl_sched(dl_ran_slice_candidate slice, scheduler_policy& dl_policy);
+  void dl_sched(dl_ran_slice_candidate slice, scheduler_policy& dl_policy, std::map<s_nssai_t, slice_prb_budget>& slice_budgets);
 
   /// Schedule UL grants for a given slice candidate.
-  void ul_sched(ul_ran_slice_candidate slice, scheduler_policy& ul_policy);
+  void ul_sched(ul_ran_slice_candidate slice, scheduler_policy& ul_policy, std::map<s_nssai_t, slice_prb_budget>& slice_budgets);
 
 private:
   /// Context for a given slice scheduling.
@@ -100,17 +107,19 @@ private:
 
   void prepare_newtx_ul_candidates(const ul_ran_slice_candidate& slice, scheduler_policy& ul_policy);
 
-  unsigned schedule_dl_retx_candidates(dl_ran_slice_candidate& slice, unsigned max_ue_grants_to_alloc);
+  unsigned schedule_dl_retx_candidates(dl_ran_slice_candidate& slice, unsigned max_ue_grants_to_alloc, std::map<s_nssai_t, slice_prb_budget>& slice_budgets);
 
-  unsigned schedule_ul_retx_candidates(ul_ran_slice_candidate& slice, unsigned max_ue_grants_to_alloc);
+  unsigned schedule_ul_retx_candidates(ul_ran_slice_candidate& slice, unsigned max_ue_grants_to_alloc, std::map<s_nssai_t, slice_prb_budget>& slice_budgets);
 
   unsigned schedule_dl_newtx_candidates(dl_ran_slice_candidate& slice,
                                         scheduler_policy&       dl_policy,
-                                        unsigned                max_ue_grants_to_alloc);
+                                        unsigned                max_ue_grants_to_alloc,
+                                        std::map<s_nssai_t, slice_prb_budget>& slice_budgets);
 
   unsigned schedule_ul_newtx_candidates(ul_ran_slice_candidate& slice,
                                         scheduler_policy&       ul_policy,
-                                        unsigned                max_ue_grants_to_alloc);
+                                        unsigned                max_ue_grants_to_alloc,
+                                        std::map<s_nssai_t, slice_prb_budget>& slice_budgets);
 
   unsigned max_pdschs_to_alloc(const dl_ran_slice_candidate& slice) const;
 
@@ -158,6 +167,11 @@ private:
   // Grants being built for the current slice.
   std::vector<ue_cell_grid_allocator::dl_newtx_grant_builder> pending_dl_newtxs;
   std::vector<ue_cell_grid_allocator::ul_newtx_grant_builder> pending_ul_newtxs;
+
+  // Parallel vectors to store slice assignments for safe budget updates in Stage 2.
+  // Indexed the same way as pending_dl_newtxs and pending_ul_newtxs.
+  std::vector<std::optional<s_nssai_t>> pending_dl_newtx_slices;
+  std::vector<std::optional<s_nssai_t>> pending_ul_newtx_slices;
 };
 
 } // namespace srsran

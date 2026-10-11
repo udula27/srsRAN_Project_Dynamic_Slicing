@@ -23,9 +23,12 @@
 #include "ue_configuration_procedure.h"
 #include "../converters/asn1_rrc_config_helpers.h"
 #include "../converters/scheduler_configuration_helpers.h"
+#include "srsran/e2/e2_du_ue_context_notifier.h"
+#include "srsran/e2/e2_du_notifier_registry.h"
 #include "srsran/mac/mac_ue_configurator.h"
 #include "srsran/rlc/rlc_factory.h"
 #include <algorithm>
+#include "fmt/format.h"
 
 using namespace srsran;
 using namespace srs_du;
@@ -40,6 +43,12 @@ ue_configuration_procedure::ue_configuration_procedure(const f1ap_ue_context_upd
   proc_logger(logger, name(), request.ue_index, ue != nullptr ? ue->rnti : rnti_t::INVALID_RNTI)
 {
   srsran_assert(ue != nullptr, "ueId={} not found", fmt::underlying(request.ue_index));
+  // DEBUG: Commented out for cleaner logs during Phase 1 validation
+  // fmt::print("========================================\n");
+  // fmt::print("UE CONFIG PROCEDURE STARTED\n");
+  // fmt::print("UE Index: {}, DRBs to setup: {}, DRBs to remove: {}\n",
+  //            fmt::underlying(request.ue_index), request.drbs_to_setup.size(), request.drbs_to_rem.size());
+  // fmt::print("========================================\n");
 }
 
 void ue_configuration_procedure::operator()(coro_context<async_task<f1ap_ue_context_update_response>>& ctx)
@@ -74,6 +83,19 @@ void ue_configuration_procedure::operator()(coro_context<async_task<f1ap_ue_cont
 
   // > Update DU UE bearers.
   update_ue_context();
+
+  // > Notify E2 layer about UE context update (check registry directly for latest notifier)
+  // DEBUG: Commented out for cleaner logs during Phase 1 validation
+  // fmt::println(">>> Checking E2 notification: drbs_to_setup.size()={}", request.drbs_to_setup.size());
+  if (!request.drbs_to_setup.empty()) {
+    auto* notifier = e2_du_notifier_registry::get_instance().get_ue_context_notifier();
+    // fmt::println(">>> E2 notifier pointer: {}", notifier != nullptr ? "VALID" : "NULL");
+    if (notifier != nullptr) {
+      notify_e2_ue_context_update(notifier);
+    }
+  } // else {
+    // fmt::println(">>> SKIPPED: No DRBs to setup");
+  // }
 
   // > Update MAC bearers.
   CORO_AWAIT_VALUE(mac_res, update_mac_and_sched());
@@ -445,6 +467,9 @@ f1ap_ue_context_update_response ue_configuration_procedure::make_ue_config_respo
     srsran_assert(code == asn1::SRSASN_SUCCESS, "Invalid cellGroupConfig");
   }
 
+  // Note: Slice (S-NSSAI) assignment to scheduler is handled in ue.cpp via set_slice_assignment()
+  // when DRB configuration is pushed to the scheduler layer
+
   // Calculate ASN.1 measGapConfig to be sent in DU-to-CU RRC container.
   if (prev_ue_res_cfg.meas_gap != ue->resources->meas_gap) {
     asn1::rrc_nr::meas_gap_cfg_s meas_gap;
@@ -497,4 +522,50 @@ void ue_configuration_procedure::handle_rrc_reconfiguration_complete_ind()
                    "execution context",
                    fmt::underlying(ue->ue_index));
   }
+}
+
+void ue_configuration_procedure::notify_e2_ue_context_update(e2_du_ue_context_notifier* notifier)
+{
+  // DEBUG: Commented out for cleaner logs during Phase 1 validation
+  // fmt::print("======== E2 UE CONTEXT UPDATE TRIGGERED ========\n");
+  // fmt::print("UE Index: {}, C-RNTI: {}\n", fmt::underlying(ue->ue_index), to_value(ue->rnti));
+  // fmt::print("Number of DRBs configured: {}\n", ue->resources->drbs.size());
+
+  // Collect all S-NSSAIs from the UE's DRBs
+  e2_ue_context_info ue_ctx;
+  ue_ctx.ue_index = ue->ue_index;
+  ue_ctx.crnti    = ue->rnti;
+
+  // Extract unique S-NSSAIs from all DRBs
+  std::vector<s_nssai_t> slices_seen;
+  for (const auto& drb_cfg : ue->resources->drbs) {
+    // fmt::print("  DRB ID: {}, SST: {}, SD: {}\n",
+    //             drb_cfg.drb_id,
+    //             drb_cfg.s_nssai.sst.value(),
+    //             drb_cfg.s_nssai.sd.is_set() ? drb_cfg.s_nssai.sd.value() : 0);
+    // Check if this S-NSSAI is already in the list
+    bool already_present = false;
+    for (const auto& seen_slice : slices_seen) {
+      if (seen_slice.sst == drb_cfg.s_nssai.sst && seen_slice.sd == drb_cfg.s_nssai.sd) {
+        already_present = true;
+        break;
+      }
+    }
+    if (!already_present) {
+      slices_seen.push_back(drb_cfg.s_nssai);
+      ue_ctx.slices.push_back(drb_cfg.s_nssai);
+    }
+  }
+
+  // Notify E2 layer if we have any slices to report
+  if (!ue_ctx.slices.empty()) {
+    // DEBUG: Commented out for cleaner logs during Phase 1 validation
+    // fmt::print("Calling E2 notifier with {} unique slice(s)\n", ue_ctx.slices.size());
+    notifier->on_ue_context_update(ue_ctx);
+    // fmt::print("✅ Successfully notified E2 about UE context update\n");
+    // fmt::print("================================================\n");
+  } // else {
+    // fmt::print("⚠️  No slices found for UE {} - E2 notification skipped\n", fmt::underlying(ue->ue_index));
+    // fmt::print("================================================\n");
+  // }
 }

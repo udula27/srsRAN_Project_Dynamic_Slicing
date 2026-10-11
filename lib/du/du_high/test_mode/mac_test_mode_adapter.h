@@ -155,6 +155,12 @@ public:
     return mac_adapted->get_positioning_handler();
   }
 
+  /// E2 Integration - Get slice resource manager for a cell (delegate to underlying MAC).
+  cell_slice_resource_manager* get_cell_slice_resource_manager(du_cell_index_t cell_index) override
+  {
+    return mac_adapted->get_cell_slice_resource_manager(cell_index);
+  }
+
   mac_ue_control_information_handler& get_ue_control_info_handler() override { return *this; }
 
   mac_pdu_handler& get_pdu_handler() override { return mac_adapted->get_pdu_handler(); }

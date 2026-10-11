@@ -113,6 +113,19 @@ void du_setup_procedure::configure_du_cells()
     // Forward config to MAC.
     ctxt.params.mac.mgr.get_cell_manager().add_cell(
         make_mac_cell_config(cell_index, du_cfg, sys_info.sib1, sys_info.si_messages, sched_cfg));
+
+    // STEP 3: Connect slice_mgr pointer after cell is added to scheduler.
+    // Get the slice resource manager from MAC and store it in DU cell context for E2 integration.
+    auto* slice_mgr_ptr = ctxt.params.mac.mgr.get_cell_slice_resource_manager(cell_index);
+    if (slice_mgr_ptr != nullptr) {
+      ctxt.cell_mng.set_slice_mgr(cell_index, slice_mgr_ptr);
+      ctxt.logger.info("[STEP3-VALIDATION] Connected slice_mgr for cell {}: ptr={}",
+                       fmt::underlying(cell_index),
+                       static_cast<void*>(slice_mgr_ptr));
+    } else {
+      ctxt.logger.warning("[STEP3-VALIDATION] Failed to get slice_mgr for cell {}",
+                          fmt::underlying(cell_index));
+    }
   }
 }
 

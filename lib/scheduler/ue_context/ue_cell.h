@@ -30,6 +30,7 @@
 #include "ue_channel_state_manager.h"
 #include "ue_drx_controller.h"
 #include "ue_link_adaptation_controller.h"
+#include "srsran/ran/s_nssai.h"
 #include "srsran/scheduler/config/scheduler_expert_config.h"
 #include "srsran/scheduler/scheduler_feedback_handler.h"
 
@@ -201,6 +202,15 @@ public:
   /// Retrieve the current Pcell state of the UE, if applicable.
   const ue_pcell_state& get_pcell_state() const { return pcell_state.value(); }
 
+  /// Set slice assignment for this UE (S-NSSAI). Used for E2SM-KPM slice-level metrics.
+  void set_slice_assignment(const s_nssai_t& slice) { assigned_slice = slice; }
+
+  /// Clear slice assignment for this UE.
+  void clear_slice_assignment() { assigned_slice.reset(); }
+
+  /// Get slice assignment for this UE. Returns std::nullopt if no slice assigned.
+  std::optional<s_nssai_t> get_slice_assignment() const { return assigned_slice; }
+
 private:
   /// \brief Performs link adaptation procedures such as cancelling HARQs etc.
   void apply_link_adaptation_procedures(const csi_report_data& csi_report);
@@ -217,6 +227,9 @@ private:
 
   /// State relative to the PCell of the UE, if applicable.
   std::optional<ue_pcell_state> pcell_state;
+
+  /// Slice assignment for this UE (S-NSSAI). Used for E2SM-KPM slice-level metrics.
+  std::optional<s_nssai_t> assigned_slice;
 
   ue_channel_state_manager channel_state;
 

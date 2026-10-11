@@ -251,3 +251,13 @@ void scheduler_impl::handle_positioning_measurement_stop(const positioning_measu
     cells[cell_index]->get_positioning_handler().handle_positioning_measurement_stop(pos_rnti);
   }
 }
+
+cell_slice_resource_manager* scheduler_impl::get_cell_slice_resource_manager(du_cell_index_t cell_index)
+{
+  if (not cells.contains(cell_index)) {
+    logger.warning("[E2-INTEGRATION] get_cell_slice_resource_manager(): cell={} does not exist",
+                   fmt::underlying(cell_index));
+    return nullptr;
+  }
+  return cells[cell_index]->get_slice_resource_manager();
+}

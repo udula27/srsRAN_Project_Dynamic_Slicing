@@ -68,6 +68,12 @@ public:
     return mac_sched->get_positioning_handler();
   }
 
+  /// E2 Integration - Get slice resource manager for a cell.
+  cell_slice_resource_manager* get_cell_slice_resource_manager(du_cell_index_t cell_index) override
+  {
+    return mac_sched->get_cell_slice_resource_manager(cell_index);
+  }
+
 private:
   /// Used to allocate new TC-RNTIs and convert from C-RNTI to UE index.
   rnti_manager rnti_table;
