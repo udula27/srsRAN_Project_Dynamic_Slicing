@@ -46,10 +46,23 @@ e2sm_rc_asn1_packer::handle_packed_e2sm_action_definition(const srsran::byte_buf
 {
   e2sm_action_definition action_def;
   action_def.service_model = e2sm_service_model_t::RC;
+
+  // Handle empty action definition (use defaults for Style 4)
+  if (action_definition.empty()) {
+    fmt::print("E2SM-RC: Empty action definition - using defaults for Style 4\n");
+    // Create default Style 4 action definition
+    auto& rc_action_def = std::get<asn1::e2sm::e2sm_rc_action_definition_s>(action_def.action_definition);
+    rc_action_def.ric_style_type = 4;  // Style 4: UE Information
+    return action_def;
+  }
+
   asn1::cbit_ref bref(action_definition);
   if (std::get<asn1::e2sm::e2sm_rc_action_definition_s>(action_def.action_definition).unpack(bref) !=
       asn1::SRSASN_SUCCESS) {
-    fmt::println("Failed to unpack E2SM RC Action Definition");
+    fmt::println("Failed to unpack E2SM RC Action Definition - using defaults for Style 4");
+    // On failure, try to use defaults for Style 4
+    auto& rc_action_def = std::get<asn1::e2sm::e2sm_rc_action_definition_s>(action_def.action_definition);
+    rc_action_def.ric_style_type = 4;
   }
   return action_def;
 }
@@ -128,14 +141,33 @@ e2_ric_control_response e2sm_rc_asn1_packer::pack_ric_control_response(const e2s
 e2sm_event_trigger_definition
 e2sm_rc_asn1_packer::handle_packed_event_trigger_definition(const srsran::byte_buffer& event_trigger_definition)
 {
-  // TODO
-  return e2sm_event_trigger_definition();
+  e2sm_event_trigger_definition e2sm_event_trigger_def;
+  e2sm_event_trigger_def.ric_service_type = e2sm_event_trigger_definition::e2sm_ric_service_type_t::REPORT;
+  e2sm_event_trigger_def.report_period = 0;  // 0 = event-triggered mode (no periodic timer)
+
+  // Handle empty event trigger (use event-triggered mode for RC Style 4)
+  if (event_trigger_definition.empty()) {
+    fmt::print("E2SM-RC: Empty event trigger - using event-triggered mode (report_period=0)\n");
+    return e2sm_event_trigger_def;
+  }
+
+  e2sm_rc_event_trigger_s e2sm_rc_event_trigger;
+  asn1::cbit_ref          bref(event_trigger_definition);
+
+  if (e2sm_rc_event_trigger.unpack(bref) != asn1::SRSASN_SUCCESS) {
+    fmt::println("Failed to unpack E2SM-RC Event Trigger Definition - using event-triggered mode");
+    return e2sm_event_trigger_def;
+  }
+
+  // E2SM-RC is event-driven, not periodic
+  // report_period = 0 indicates event-triggered mode
+  return e2sm_event_trigger_def;
 }
 
 asn1::unbounded_octstring<true> e2sm_rc_asn1_packer::pack_ran_function_description()
 {
   e2sm_rc_ran_function_definition_s ran_function_desc;
-  ran_function_desc.ran_function_definition_report_present        = false;
+  ran_function_desc.ran_function_definition_report_present        = true;
   ran_function_desc.ran_function_definition_policy_present        = false;
   ran_function_desc.ran_function_definition_insert_present        = false;
   ran_function_desc.ran_function_definition_event_trigger_present = false;
@@ -150,6 +182,25 @@ asn1::unbounded_octstring<true> e2sm_rc_asn1_packer::pack_ran_function_descripti
   ran_function_desc.ran_function_name.ran_function_description.from_string(func_description.c_str());
   ran_function_desc.ext = false;
 
+  // Add Report Style 4 (UE Information)
+  ran_function_definition_report_item_s report_style_4;
+  report_style_4.ric_report_style_type = 4;
+  report_style_4.ric_report_style_name.from_string("UE Information");
+  report_style_4.ric_supported_event_trigger_style_type = 1;  // Event-triggered
+  report_style_4.ric_report_action_format_type          = 4;  // Format 4
+  report_style_4.ric_ind_hdr_format_type                = 1;  // Format 1
+  report_style_4.ric_ind_msg_format_type                = 2;  // Format 2 (UE-level)
+
+  // Add RAN Parameter: S-NSSAI
+  report_ran_param_item_s s_nssai_param;
+  s_nssai_param.ran_param_id = 1;
+  s_nssai_param.ran_param_name.from_string("S-NSSAI");
+  report_style_4.ran_report_params_list.push_back(s_nssai_param);
+
+  ran_function_desc.ran_function_definition_report.ric_report_style_list.push_back(report_style_4);
+
+
+  // Add Control Styles
   for (auto const& x : control_services) {
     ran_function_desc.ran_function_definition_ctrl_present = true;
     e2sm_control_service*               control_service    = x.second;

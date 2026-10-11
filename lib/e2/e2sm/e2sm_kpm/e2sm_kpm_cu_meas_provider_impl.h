@@ -72,6 +72,10 @@ public:
                      const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
                      std::vector<asn1::e2sm::meas_record_item_c>& items) override;
 
+  void clear_slice_prb_stats() override;
+
+  void log_per_slice_prb_utilization() override;
+
 protected:
   typedef bool(metric_meas_getter_func_t)(const asn1::e2sm::label_info_list_l          label_info_list,
                                           const std::vector<asn1::e2sm::ue_id_c>&      ues,

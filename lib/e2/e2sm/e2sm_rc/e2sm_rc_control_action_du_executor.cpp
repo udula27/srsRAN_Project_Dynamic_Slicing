@@ -136,10 +136,14 @@ void e2sm_rc_control_action_2_6_du_executor::parse_action_ran_parameter_value(
     ctrl_cfg.rrm_policy_ratio_list.back().policy_members_list.back().s_nssai.sst =
         slice_service_type{(uint8_t)ran_param.ran_p_choice_elem_false().ran_param_value.value_oct_s().to_number()};
   } else if (ran_param_id == 10) {
-    // SD.
+    // SD (Slice Differentiator).
+    // SD=0 bytes from the xApp means SD=0 (explicit zero), not "no SD".
+    // "No SD" is represented internally as 0xFFFFFF (default_val).
+    // Using create() here preserves SD=0 as val=0, which matches slices created from
+    // the YAML config with sd: 0, enabling exact hits in handle_slice_reconfiguration_request.
     uint64_t sd = ran_param.ran_p_choice_elem_false().ran_param_value.value_oct_s().to_number();
     ctrl_cfg.rrm_policy_ratio_list.back().policy_members_list.back().s_nssai.sd =
-        slice_differentiator::create(sd).value();
+        slice_differentiator::create(static_cast<uint32_t>(sd)).value();
   } else if (ran_param_id == 11) {
     // Min PRB Policy Ratio.
     ctrl_cfg.rrm_policy_ratio_list.back().minimum_ratio =
@@ -199,9 +203,14 @@ e2sm_rc_control_action_2_6_du_executor::execute_ric_control_action(const e2sm_ri
 
   // Log received control request.
   fmt::memory_buffer log_buffer;
-  fmt::format_to(std::back_inserter(log_buffer),
-                 "Slice-level PRB quota Control Request for UE gNB-DU-UE-F1AP-ID={}:\n",
-                 gnb_du_ue_f1ap_id_to_uint(ctrl_config.ue_id));
+  if (ctrl_config.ue_id == gnb_du_ue_f1ap_id_t::invalid) {
+    fmt::format_to(std::back_inserter(log_buffer),
+                   "Slice-level PRB quota Control Request for CELL-LEVEL configuration:\n");
+  } else {
+    fmt::format_to(std::back_inserter(log_buffer),
+                   "Slice-level PRB quota Control Request for UE gNB-DU-UE-F1AP-ID={}:\n",
+                   gnb_du_ue_f1ap_id_to_uint(ctrl_config.ue_id));
+  }
   fmt::format_to(std::back_inserter(log_buffer), "RRM Policy Ratio Group:\n");
   for (const auto& rrm_policy_ratio : ctrl_config.rrm_policy_ratio_list) {
     fmt::format_to(std::back_inserter(log_buffer), " RRM Policy:\n");
@@ -246,10 +255,14 @@ e2sm_rc_control_action_2_6_du_executor::convert_to_du_config_request(const e2sm_
   uint64_t gnb_cu_ue_f1ap_id = ctrl_hdr.ue_id.gnb_du_ue_id().gnb_cu_ue_f1ap_id;
   ctrl_config.ue_id          = f1ap_ue_id_provider.get_gnb_du_ue_f1ap_id(int_to_gnb_cu_ue_f1ap_id(gnb_cu_ue_f1ap_id));
 
-  if (ctrl_config.ue_id == gnb_du_ue_f1ap_id_t::invalid) {
-    logger.info("Slice-level PRB quota Control Request received but UE not found, gNB-CU-UE-F1AP-ID={}",
+  // For slice-level PRB quota control (Action 2.6), allow cell-level configuration even without specific UE
+  // When UE ID is 0 or invalid, this is a cell-level slice policy update (not UE-specific)
+  bool is_cell_level_config = (ctrl_config.ue_id == gnb_du_ue_f1ap_id_t::invalid) || (gnb_cu_ue_f1ap_id == 0);
+
+  if (is_cell_level_config) {
+    logger.info("Slice-level PRB quota Control Request for CELL-LEVEL configuration (no specific UE), gNB-CU-UE-F1AP-ID={}",
                 gnb_cu_ue_f1ap_id);
-    return {};
+    // Continue processing - downstream will apply to cell slice manager
   }
 
   // Use a lambda to define the template function in parse_ran_parameter_value

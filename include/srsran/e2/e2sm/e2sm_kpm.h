@@ -131,6 +131,12 @@ public:
                              const std::vector<asn1::e2sm::ue_id_c>&      ues,
                              const std::optional<asn1::e2sm::cgi_c>       cell_global_id,
                              std::vector<asn1::e2sm::meas_record_item_c>& items) = 0;
+
+  /// \brief Clear per-slice PRB statistics (called at start of measurement collection cycle)
+  virtual void clear_slice_prb_stats() = 0;
+
+  /// \brief Log per-slice PRB utilization (called after measurement collection)
+  virtual void log_per_slice_prb_utilization() = 0;
 };
 
 } // namespace srsran

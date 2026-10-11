@@ -33,6 +33,7 @@
 #include <deque>
 #include <map>
 #include <numeric>
+#include <unordered_map>
 
 namespace srsran {
 
@@ -102,6 +103,37 @@ private:
                                       std::vector<asn1::e2sm::meas_record_item_c>&   items,
                                       asn1::e2sm::meas_record_item_c::types::options value_type);
 
+  /// Phase 2A: Helper to extract slice ID (S-NSSAI) from ASN.1 measurement label.
+  /// Returns std::nullopt if label does not contain slice_id.
+  std::optional<s_nssai_t> extract_slice_id_from_label(const asn1::e2sm::meas_label_s& meas_label);
+
+  /// Per-slice PRB statistics structure
+  struct slice_prb_stats {
+    uint8_t  sst = 0;
+    uint32_t sd  = 0;
+    bool     sd_is_set = false;
+    uint32_t dl_prb_used = 0;
+    uint32_t ul_prb_used = 0;
+    uint32_t ue_count = 0;
+  };
+
+  /// Clear per-slice PRB statistics (called at start of each measurement collection)
+  void clear_slice_prb_stats() override;
+
+  /// Update per-slice PRB statistics (called during slice filtering)
+  void update_slice_prb_stats(const s_nssai_t& slice, uint32_t dl_prbs, uint32_t ul_prbs, uint32_t ue_cnt);
+
+  /// Key generation for per-slice map: (SST << 32) | SD
+  uint64_t slice_key(const s_nssai_t& slice) const;
+
+  /// Map to track per-slice PRB usage statistics
+  std::unordered_map<uint64_t, slice_prb_stats> slice_stats_map;
+
+public:
+  /// Log per-slice PRB utilization (called after measurement collection)
+  void log_per_slice_prb_utilization() override;
+
+private:
   // Measurement getter functions.
   metric_meas_getter_func_t get_cqi;
   metric_meas_getter_func_t get_rsrp;

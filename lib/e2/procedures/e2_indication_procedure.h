@@ -60,6 +60,8 @@ private:
 
   std::chrono::seconds time_to_wait{1};
   bool                 running = true;
+  bool                 has_event_trigger = false;
+  bool                 event_occurred = false;
 };
 
 } // namespace srsran

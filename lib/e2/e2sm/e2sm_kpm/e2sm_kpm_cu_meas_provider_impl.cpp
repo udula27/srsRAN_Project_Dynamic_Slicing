@@ -172,6 +172,16 @@ float e2sm_kpm_cu_meas_provider_impl::bytes_to_kbits(float value)
   return (nof_bits_per_byte * value / 1e3);
 }
 
+void e2sm_kpm_cu_meas_provider_impl::clear_slice_prb_stats()
+{
+  // Not applicable for CU measurements (only DU)
+}
+
+void e2sm_kpm_cu_meas_provider_impl::log_per_slice_prb_utilization()
+{
+  // Not applicable for CU measurements (only DU)
+}
+
 void e2sm_kpm_cu_meas_provider_impl::report_metrics(const pdcp_metrics_container& metrics)
 {
   ue_aggr_pdcp_metrics[metrics.ue_index].push_back(metrics);

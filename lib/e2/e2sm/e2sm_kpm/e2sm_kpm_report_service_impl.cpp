@@ -24,6 +24,9 @@
 #include "e2sm_kpm_utils.h"
 #include <algorithm>
 #include <chrono>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
 
 using namespace asn1::e2ap;
 using namespace asn1::e2sm;
@@ -95,11 +98,116 @@ bool e2sm_kpm_report_service_base::is_ind_msg_ready()
 
 srsran::byte_buffer e2sm_kpm_report_service_base::get_indication_message()
 {
+#ifdef E2_KPM_DEBUG
+  printf("[E2 TRACE] ===== Entered get_indication_message() =====\n");
+  std::cout << "[E2_KPM_DEBUG] ENABLED - Starting ASN.1 instrumentation" << std::endl;
+  logger.warning("[E2 ASN1] PHASE 1: Dumping Indication Message Structure");
+  logger.warning("[E2 ASN1] Message Format Type: {}",
+                 ric_ind_message_generic.ind_msg_formats.type().to_string());
+
+  // For Format1 (Style 1)
+  if (ric_ind_message_generic.ind_msg_formats.type() ==
+      e2sm_kpm_ind_msg_s::ind_msg_formats_c_::types::ind_msg_format1) {
+    const auto& format1 = ric_ind_message_generic.ind_msg_formats.ind_msg_format1();
+    logger.warning("[E2 ASN1] Format1: meas_data.size() = {}", format1.meas_data.size());
+    logger.warning("[E2 ASN1] Format1: meas_info_list.size() = {}", format1.meas_info_list.size());
+    logger.warning("[E2 ASN1] Format1: granul_period = {} ms", format1.granul_period);
+
+    for (size_t i = 0; i < format1.meas_data.size(); ++i) {
+      const auto& meas_data_item = format1.meas_data[i];
+      logger.warning("[E2 ASN1] MeasDataItem[{}]: meas_record.size() = {}",
+                     i, meas_data_item.meas_record.size());
+
+      for (size_t j = 0; j < meas_data_item.meas_record.size(); ++j) {
+        const auto& meas_record = meas_data_item.meas_record[j];
+        if (meas_record.type() == meas_record_item_c::types::integer) {
+          logger.warning("[E2 ASN1]   Record[{}]: INTEGER = {}", j, meas_record.integer());
+        } else if (meas_record.type() == meas_record_item_c::types::real) {
+          logger.warning("[E2 ASN1]   Record[{}]: REAL (skipped)", j);
+        } else if (meas_record.type() == meas_record_item_c::types::no_value) {
+          logger.warning("[E2 ASN1]   Record[{}]: NO_VALUE", j);
+        }
+      }
+    }
+
+    for (size_t i = 0; i < format1.meas_info_list.size(); ++i) {
+      const auto& meas_info = format1.meas_info_list[i];
+      std::string meas_name = meas_info.meas_type.meas_name().to_string();
+      logger.warning("[E2 ASN1] MeasInfo[{}]: name='{}', labels={}",
+                     i, meas_name, meas_info.label_info_list.size());
+
+      for (size_t k = 0; k < meas_info.label_info_list.size(); ++k) {
+        const auto& label = meas_info.label_info_list[k].meas_label;
+        if (label.slice_id_present) {
+          logger.warning("[E2 ASN1]   Label[{}]: SLICE_ID present", k);
+        } else if (label.no_label_present) {
+          logger.warning("[E2 ASN1]   Label[{}]: NO_LABEL", k);
+        }
+      }
+    }
+  }
+#endif
+
+  logger.info("E2SM-KPM: Generating indication message");
+
+#ifdef E2_KPM_DEBUG
+  // Check measData before encoding
+  if (ric_ind_message_generic.ind_msg_formats.type() ==
+      e2sm_kpm_ind_msg_s::ind_msg_formats_c_::types::ind_msg_format1) {
+    const auto& format1 = ric_ind_message_generic.ind_msg_formats.ind_msg_format1();
+    printf("[E2 TRACE] Before encoding: measData count=%u, measInfo count=%u\n",
+           static_cast<unsigned>(format1.meas_data.size()),
+           static_cast<unsigned>(format1.meas_info_list.size()));
+    if (format1.meas_data.size() == 0) {
+      printf("[E2 ERROR] measData is EMPTY - nothing to encode!\n");
+    }
+  }
+  printf("[E2 TRACE] Calling ric_ind_message_generic.pack() for E2SM-KPM...\n");
+#endif
+
   byte_buffer   ind_msg_bytes;
   asn1::bit_ref bref_ind_msg(ind_msg_bytes);
-  if (ric_ind_message_generic.pack(bref_ind_msg) != asn1::SRSASN_SUCCESS) {
+
+  asn1::SRSASN_CODE pack_result = ric_ind_message_generic.pack(bref_ind_msg);
+
+#ifdef E2_KPM_DEBUG
+  printf("[E2 TRACE] pack() returned: code=%d\n", static_cast<int>(pack_result));
+  printf("[E2 TRACE] Encoded buffer size: %zu bytes\n", ind_msg_bytes.length());
+#endif
+
+  if (pack_result != asn1::SRSASN_SUCCESS) {
+#ifdef E2_KPM_DEBUG
+    printf("[E2 ERROR] E2SM-KPM encoding FAILED! pack_result=%d\n", static_cast<int>(pack_result));
+#endif
+    logger.error("[E2 ASN1] PHASE 2: ENCODING FAILED - pack() returned error");
     logger.error("Failed to pack RIC Indication Message");
-  };
+  } else {
+#ifdef E2_KPM_DEBUG
+    printf("[E2 TRACE] E2SM-KPM encoding SUCCESS! size=%zu bytes\n", ind_msg_bytes.length());
+#endif
+    logger.info("E2SM-KPM: Successfully packed indication message ({} bytes)", ind_msg_bytes.length());
+
+#ifdef E2_KPM_DEBUG
+    // PHASE 2: Hex dump of encoded buffer
+    logger.warning("[E2 ASN1] PHASE 2: Encoded IndicationMessage");
+    logger.warning("[E2 ASN1 HEX] Size = {} bytes", ind_msg_bytes.length());
+
+    // Print hex dump (16 bytes per line)
+    std::stringstream hex_stream;
+    hex_stream << std::hex << std::setfill('0');
+    for (size_t i = 0; i < ind_msg_bytes.length(); ++i) {
+      if (i > 0 && i % 16 == 0) {
+        logger.warning("[E2 ASN1 HEX] {}", hex_stream.str());
+        hex_stream.str("");
+        hex_stream.clear();
+      }
+      hex_stream << std::setw(2) << static_cast<unsigned>(static_cast<uint8_t>(ind_msg_bytes[i])) << " ";
+    }
+    if (!hex_stream.str().empty()) {
+      logger.warning("[E2 ASN1 HEX] {}", hex_stream.str());
+    }
+#endif
+  }
 
   clear_collect_measurements();
 
@@ -139,10 +247,15 @@ void e2sm_kpm_report_service_style1::clear_collect_measurements()
   ric_ind_header.collet_start_time.from_number(get_ntp_timestamp());
   // Reset indication msg ready flag.
   is_ind_msg_ready_ = false;
+
+  // Clear per-slice PRB statistics for new collection cycle
+  meas_provider.clear_slice_prb_stats();
 }
 
 bool e2sm_kpm_report_service_style1::collect_measurements()
 {
+  logger.info("E2SM-KPM Style 1: Collecting measurements...");
+
   // Set the granularity period.
   ric_ind_message.granul_period_present = true;
   ric_ind_message.granul_period         = granul_period;
@@ -152,6 +265,8 @@ bool e2sm_kpm_report_service_style1::collect_measurements()
   meas_data_item_s                meas_data_item;
 
   auto& meas_info_list = ric_ind_message.meas_info_list;
+  logger.info("E2SM-KPM Style 1: Processing {} measurement items", meas_info_list.size());
+
   for (auto& meas_info : meas_info_list) {
     // Get measurements.
     meas_records_items.clear();
@@ -159,11 +274,33 @@ bool e2sm_kpm_report_service_style1::collect_measurements()
             meas_info.meas_type, meas_info.label_info_list, {}, cell_global_id, meas_records_items)) {
       // Fill measurements data.
       meas_data_item.meas_record.push_back(meas_records_items[0]);
+      logger.info("E2SM-KPM Style 1: Collected metric '{}' successfully",
+                  meas_info.meas_type.meas_name().to_string());
+    } else {
+      logger.warning("E2SM-KPM Style 1: Failed to collect metric '{}'",
+                     meas_info.meas_type.meas_name().to_string());
     }
   }
   ric_ind_message.meas_data.push_back(meas_data_item);
   // As E2 node is always present, each meas_record is valid value and indication is ready.
   is_ind_msg_ready_ = true;
+  logger.info("E2SM-KPM Style 1: Indication message ready = {}", is_ind_msg_ready_);
+
+#ifdef E2_KPM_DEBUG
+  logger.warning("[E2 KPM COLLECT] Style 1: meas_data.size() = {}", ric_ind_message.meas_data.size());
+  logger.warning("[E2 KPM COLLECT] Style 1: meas_data[0].meas_record.size() = {}",
+                 meas_data_item.meas_record.size());
+  for (size_t i = 0; i < meas_data_item.meas_record.size(); ++i) {
+    const auto& record = meas_data_item.meas_record[i];
+    if (record.type() == meas_record_item_c::types::integer) {
+      logger.warning("[E2 KPM COLLECT]   meas_record[{}] = {} (INTEGER)", i, record.integer());
+    }
+  }
+#endif
+
+  // Log per-slice PRB utilization if slice-filtered metrics were collected
+  meas_provider.log_per_slice_prb_utilization();
+
   return true;
 }
 

@@ -37,6 +37,8 @@ e2sm_kpm_impl::e2sm_kpm_impl(srslog::basic_logger&   logger_,
 
 bool e2sm_kpm_impl::action_supported(const asn1::e2ap::ric_action_to_be_setup_item_s& ric_action)
 {
+  logger.info("=== E2SM-KPM: Checking if action {} is supported ===", ric_action.ric_action_id);
+
   e2sm_action_definition action_def =
       e2sm_packer.handle_packed_e2sm_action_definition(ric_action.ric_action_definition);
   if (action_def.service_model != e2sm_service_model_t::KPM) {
@@ -51,16 +53,23 @@ bool e2sm_kpm_impl::action_supported(const asn1::e2ap::ric_action_to_be_setup_it
   e2sm_kpm_action_definition_s& e2sm_kpm_action_def =
       std::get<e2sm_kpm_action_definition_s>(action_def.action_definition);
 
+  logger.info("E2SM-KPM: Report Style Type = {}", e2sm_kpm_action_def.ric_style_type);
+
   switch (e2sm_kpm_action_def.ric_style_type) {
     case 1:
+      logger.info("E2SM-KPM: Processing Report Style 1 (E2 Node Measurement)");
       return process_action_definition_format1(e2sm_kpm_action_def);
     case 2:
+      logger.info("E2SM-KPM: Processing Report Style 2 (Single UE Measurement)");
       return process_action_definition_format2(e2sm_kpm_action_def);
     case 3:
+      logger.info("E2SM-KPM: Processing Report Style 3 (Condition-based UE Measurement)");
       return process_action_definition_format3(e2sm_kpm_action_def);
     case 4:
+      logger.info("E2SM-KPM: Processing Report Style 4 (Common Condition-based)");
       return process_action_definition_format4(e2sm_kpm_action_def);
     case 5:
+      logger.info("E2SM-KPM: Processing Report Style 5 (Multiple UEs)");
       return process_action_definition_format5(e2sm_kpm_action_def);
     default:
       logger.info("Unknown RIC style type %i -> do not admit action %i (type %i)",
@@ -232,6 +241,8 @@ bool e2sm_kpm_impl::process_action_definition_format5(const e2sm_kpm_action_defi
 std::unique_ptr<e2sm_report_service>
 e2sm_kpm_impl::get_e2sm_report_service(const srsran::byte_buffer& action_definition)
 {
+  logger.info("=== E2SM-KPM: Creating report service for subscription ===");
+
   e2sm_action_definition action_def = e2sm_packer.handle_packed_e2sm_action_definition(action_definition);
   if (action_def.service_model != e2sm_service_model_t::KPM) {
     logger.info("Unknown service model {}", fmt::underlying(action_def.service_model));
@@ -240,16 +251,24 @@ e2sm_kpm_impl::get_e2sm_report_service(const srsran::byte_buffer& action_definit
   e2sm_kpm_action_definition_s& e2sm_kpm_action_def =
       std::get<e2sm_kpm_action_definition_s>(action_def.action_definition);
   uint32_t ric_style_type = e2sm_kpm_action_def.ric_style_type;
+
+  logger.info("E2SM-KPM: Creating report service for Style {}", ric_style_type);
+
   switch (ric_style_type) {
     case 1:
+      logger.info("E2SM-KPM: Creating Style 1 report service (E2 Node Measurement)");
       return std::make_unique<e2sm_kpm_report_service_style1>(std::move(e2sm_kpm_action_def), du_meas_provider);
     case 2:
+      logger.info("E2SM-KPM: Creating Style 2 report service (Single UE)");
       return std::make_unique<e2sm_kpm_report_service_style2>(std::move(e2sm_kpm_action_def), du_meas_provider);
     case 3:
+      logger.info("E2SM-KPM: Creating Style 3 report service (Condition-based)");
       return std::make_unique<e2sm_kpm_report_service_style3>(std::move(e2sm_kpm_action_def), du_meas_provider);
     case 4:
+      logger.info("E2SM-KPM: Creating Style 4 report service (Common Condition-based)");
       return std::make_unique<e2sm_kpm_report_service_style4>(std::move(e2sm_kpm_action_def), du_meas_provider);
     case 5:
+      logger.info("E2SM-KPM: Creating Style 5 report service (Multiple UEs)");
       return std::make_unique<e2sm_kpm_report_service_style5>(std::move(e2sm_kpm_action_def), du_meas_provider);
     default:
       logger.info("Unknown RIC style type %i", ric_style_type);

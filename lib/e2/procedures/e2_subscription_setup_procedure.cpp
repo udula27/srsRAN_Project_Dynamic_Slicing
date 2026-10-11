@@ -44,14 +44,21 @@ void e2_subscription_setup_procedure::operator()(coro_context<async_task<void>>&
   CORO_BEGIN(ctx);
   logger.debug("\"{}\" initialized", name());
   logger.info("E2AP: Received subscription request");
+  logger.info("E2AP: RAN Function ID={}, RIC Requestor ID={}, RIC Instance ID={}",
+              request->ran_function_id,
+              request->ric_request_id.ric_requestor_id,
+              request->ric_request_id.ric_instance_id);
 
   e2_subscribe_reponse_message response;
   response = subscription_mngr.handle_subscription_setup(request);
   if (response.success) {
+    logger.info("E2AP: Subscription setup successful, starting subscription");
     event_manager.add_sub_del_req(request->ric_request_id, timers);
     subscription_mngr.start_subscription(response.request_id, request->ran_function_id, event_manager, ric_notif);
+    logger.info("E2AP: Subscription started, sending response to RIC");
     send_e2_subscription_setup_response(response);
   } else {
+    logger.warning("E2AP: Subscription setup failed, sending failure response");
     send_e2_subscription_setup_failure(response);
   }
 

@@ -45,6 +45,13 @@ public:
   virtual srsran::byte_buffer get_indication_message() override;
   srsran::byte_buffer         get_indication_header() override;
 
+  /// KPM uses periodic reporting mode (not event-triggered)
+  manual_event_flag& get_report_event_signal() override {
+    static manual_event_flag dummy_event;
+    return dummy_event;  // Return dummy that never triggers
+  }
+  bool supports_event_trigger() const override { return false; }
+
 protected:
   /// Helper functions.
   virtual bool initialize_ric_ind_msg_format_1(asn1::e2sm::meas_info_list_l&           action_meas_info_list,

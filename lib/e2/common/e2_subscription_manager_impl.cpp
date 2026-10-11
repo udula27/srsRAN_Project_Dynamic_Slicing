@@ -121,12 +121,16 @@ void e2_subscription_manager_impl::start_subscription(const asn1::e2ap::ric_requ
     }
   }
 
+  logger.info("E2 Subscription Manager: Launching indication procedure for RIC Requestor ID={}, RIC Instance ID={}",
+              ric_request_id.ric_requestor_id,
+              ric_request_id.ric_instance_id);
   subscriptions[{ric_request_id.ric_requestor_id, ric_request_id.ric_instance_id}].indication_task =
       launch_async<e2_indication_procedure>(
           tx_pdu_notifier,
           ev_mng,
           subscriptions[{ric_request_id.ric_requestor_id, ric_request_id.ric_instance_id}].subscription_info,
           logger);
+  logger.info("E2 Subscription Manager: Indication procedure launched");
 }
 
 void e2_subscription_manager_impl::stop_subscription(const asn1::e2ap::ric_request_id_s&         ric_request_id,

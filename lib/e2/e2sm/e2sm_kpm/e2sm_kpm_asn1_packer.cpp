@@ -183,6 +183,7 @@ asn1::unbounded_octstring<true> e2sm_kpm_asn1_packer::pack_ran_function_descript
     ran_function_desc.ric_report_style_list.push_back(ric_report_style_item);
   }
 
+
   srsran::byte_buffer buf;
   asn1::bit_ref       bref(buf);
   if (ran_function_desc.pack(bref) != asn1::SRSASN_SUCCESS) {

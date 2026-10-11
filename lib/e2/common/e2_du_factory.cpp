@@ -35,6 +35,7 @@
 #include "e2sm/e2sm_rc/e2sm_rc_control_service_impl.h"
 #include "e2sm/e2sm_rc/e2sm_rc_impl.h"
 #include "srsran/e2/e2_agent_dependencies.h"
+#include <iostream>
 
 using namespace srsran;
 
@@ -56,6 +57,11 @@ std::unique_ptr<e2_agent> srsran::create_e2_du_agent(const e2ap_configuration&  
 
   // E2SM-KPM
   auto e2sm_kpm_meas_provider = std::make_unique<e2sm_kpm_du_meas_provider_impl>(*f1ap_ue_id_translator_);
+
+  // EXECUTION TRACE: Confirm DU provider is used
+  srslog::fetch_basic_logger("E2SM-KPM").error("🔥 EXECUTION TRACE: Created DU KPM Provider (NOT CU)");
+  std::cout << "\n🔥 TRACE: Using E2SM-KPM DU Provider" << std::endl;
+
   std::unique_ptr<e2sm_kpm_asn1_packer> e2sm_kpm_packer =
       std::make_unique<e2sm_kpm_asn1_packer>(*e2sm_kpm_meas_provider);
   std::unique_ptr<e2sm_kpm_impl> e2sm_kpm_iface =
@@ -69,7 +75,7 @@ std::unique_ptr<e2_agent> srsran::create_e2_du_agent(const e2ap_configuration&  
 
   // E2SM-RC
   auto e2sm_rc_packer = std::make_unique<e2sm_rc_asn1_packer>();
-  auto e2sm_rc_iface  = std::make_unique<e2sm_rc_impl>(logger, *e2sm_rc_packer);
+  auto e2sm_rc_iface  = std::make_unique<e2sm_rc_impl>(logger, *e2sm_rc_packer, *f1ap_ue_id_translator_);
   // Add Supported Control Styles.
   int                                   control_service_style_id = 2;
   std::unique_ptr<e2sm_control_service> rc_control_service_style =

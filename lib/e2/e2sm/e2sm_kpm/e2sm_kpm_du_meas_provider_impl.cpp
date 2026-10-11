@@ -50,12 +50,12 @@ e2sm_kpm_du_meas_provider_impl::e2sm_kpm_du_meas_provider_impl(srs_du::f1ap_ue_i
   supported_metrics.emplace(
       "RRU.PrbUsedDl",
       e2sm_kpm_supported_metric_t{
-          NO_LABEL, E2_NODE_LEVEL | UE_LEVEL, true, &e2sm_kpm_du_meas_provider_impl::get_prb_used_dl});
+          NO_LABEL | SLICE_ID_LABEL, E2_NODE_LEVEL | UE_LEVEL, true, &e2sm_kpm_du_meas_provider_impl::get_prb_used_dl});
 
   supported_metrics.emplace(
       "RRU.PrbUsedUl",
       e2sm_kpm_supported_metric_t{
-          NO_LABEL, E2_NODE_LEVEL | UE_LEVEL, true, &e2sm_kpm_du_meas_provider_impl::get_prb_used_ul});
+          NO_LABEL | SLICE_ID_LABEL, E2_NODE_LEVEL | UE_LEVEL, true, &e2sm_kpm_du_meas_provider_impl::get_prb_used_ul});
 
   supported_metrics.emplace(
       "RRU.PrbTotDl",
@@ -155,9 +155,20 @@ void e2sm_kpm_du_meas_provider_impl::report_metrics(const scheduler_cell_metrics
   nof_dl_slots           = cell_metrics.nof_dl_slots;
   nof_ul_slots           = cell_metrics.nof_ul_slots;
   nof_ded_cell_preambles = cell_metrics.nof_prach_preambles;
+
+  // Phase 1: Store UE metrics with slice info (validated and working)
   for (auto& ue_metric : cell_metrics.ue_metrics) {
     last_ue_metrics.push_back(ue_metric);
+
+    // Debug log: Verify s_nssai field is populated (only at debug level)
+    if (ue_metric.s_nssai.has_value()) {
+      logger.debug("UE {} metrics include slice SST={}, SD={}",
+                   ue_metric.ue_index,
+                   ue_metric.s_nssai->sst.value(),
+                   ue_metric.s_nssai->sd.is_set() ? ue_metric.s_nssai->sd.value() : 0);
+    }
   }
+
   // Scheduler metrics are always delivered, RLC only when UEs are present to clear RLC history.
   clear_rlc_metrics();
 }
@@ -231,17 +242,23 @@ bool e2sm_kpm_du_meas_provider_impl::is_metric_supported(const asn1::e2sm::meas_
                                                          const e2sm_kpm_metric_level_enum level,
                                                          const bool&                      cell_scope)
 {
-  if (!label.no_label_present) {
-    logger.debug("Currently only NO_LABEL metric supported.");
+  // Phase 2: Accept NO_LABEL (aggregate) and SLICE_ID_LABEL (slice-filtered)
+  if (!label.no_label_present && !label.slice_id_present) {
+    logger.debug("Label not supported. Only NO_LABEL and SLICE_ID_LABEL are supported.");
     return false;
   }
 
+  logger.debug("E2SM-KPM: Label validation passed - NO_LABEL={}, SLICE_ID={}",
+               label.no_label_present, label.slice_id_present);
+
   for (auto& metric : supported_metrics) {
     if (strcmp(meas_type.meas_name().to_string().c_str(), metric.first.c_str()) == 0) {
+      logger.debug("E2SM-KPM: Metric '{}' is supported", metric.first);
       return true;
     }
   }
 
+  logger.debug("E2SM-KPM: Metric '{}' not found in supported metrics list", meas_type.meas_name().to_string());
   // TODO: check if metric supported with required label, level and cell_scope
   return false;
 }
@@ -458,36 +475,119 @@ bool e2sm_kpm_du_meas_provider_impl::get_prb_used_dl(const asn1::e2sm::label_inf
                                                      std::vector<asn1::e2sm::meas_record_item_c>& items)
 {
   bool meas_collected = false;
+
   if (last_ue_metrics.empty()) {
     return handle_no_meas_data_available(ues, items, asn1::e2sm::meas_record_item_c::types::options::integer);
   }
-  if ((label_info_list.size() > 1 or
-       (label_info_list.size() == 1 and not label_info_list[0].meas_label.no_label_present))) {
-    logger.debug("Metric: RRU.PrbUsedDl supports only NO_LABEL label.");
+
+  // Phase 2B: Parse label to check for SLICE_ID filtering
+  std::optional<s_nssai_t> requested_slice;
+  bool                     has_slice_filter = false;
+
+  if (label_info_list.size() == 1) {
+    const auto& label = label_info_list[0].meas_label;
+    if (label.slice_id_present) {
+      requested_slice  = extract_slice_id_from_label(label);
+      has_slice_filter = true;
+      logger.debug("Phase 2B: RRU.PrbUsedDl filtering by slice SST={}, SD={}",
+                   requested_slice.value().sst.value(),
+                   requested_slice.value().sd.is_set() ? requested_slice.value().sd.value() : 0);
+    } else if (!label.no_label_present) {
+      logger.debug("Metric: RRU.PrbUsedDl supports only NO_LABEL and SLICE_ID labels.");
+      return meas_collected;
+    }
+  } else if (label_info_list.size() > 1) {
+    logger.debug("Metric: RRU.PrbUsedDl supports only single label.");
     return meas_collected;
   }
 
+  // Phase 2B: E2 Node level metrics (aggregate across UEs)
   if (ues.empty()) {
-    double dl_prbs_used = std::accumulate(last_ue_metrics.begin(),
-                                          last_ue_metrics.end(),
-                                          0,
-                                          [](size_t sum, const scheduler_ue_metrics& metric) {
-                                            return sum + metric.tot_pdsch_prbs_used;
-                                          }) /
-                          nof_dl_slots;
+    double dl_prbs_used = 0;
+    unsigned ue_count   = 0;
+
+    if (has_slice_filter) {
+      // Filter by slice
+      logger.debug("Phase 2B: Filtering {} UE metrics for slice SST={}, SD={}",
+                   last_ue_metrics.size(),
+                   requested_slice.value().sst.value(),
+                   requested_slice.value().sd.is_set() ? requested_slice.value().sd.value() : 0);
+      for (size_t metric_idx = 0; metric_idx < last_ue_metrics.size(); ++metric_idx) {
+        const auto& metric = last_ue_metrics[metric_idx];
+        if (metric.s_nssai.has_value()) {
+          const auto& ue_slice = metric.s_nssai.value();
+          const auto& req_slice = requested_slice.value();
+
+          // Compare S-NSSAI: SST must match, SD is optional
+          bool sst_match = (ue_slice.sst == req_slice.sst);
+          bool sd_match = true;
+
+          // Only enforce SD matching if request has explicit non-zero SD
+          if (req_slice.sd.is_set() && req_slice.sd.value() != 0) {
+            // Request wants specific SD - UE must match
+            sd_match = ue_slice.sd.is_set() && (ue_slice.sd.value() == req_slice.sd.value());
+          }
+
+          if (sst_match && sd_match) {
+            logger.debug("Phase 2B: MATCH! Adding UE with {} DL PRBs", metric.tot_pdsch_prbs_used);
+            dl_prbs_used += metric.tot_pdsch_prbs_used;
+            ue_count++;
+          } else {
+            logger.debug("Phase 2B: NO MATCH - skipping UE");
+          }
+        } else {
+          logger.debug("Phase 2B: UE has no slice info - skipping");
+        }
+      }
+
+      logger.debug("Phase 2B: RRU.PrbUsedDl slice-filtered {} UEs, {} PRBs", ue_count, dl_prbs_used);
+
+      // Update per-slice statistics
+      if (requested_slice.has_value()) {
+        update_slice_prb_stats(requested_slice.value(), (uint32_t)dl_prbs_used, 0, ue_count);
+      }
+    } else {
+      // No filter - aggregate all UEs
+      dl_prbs_used = std::accumulate(last_ue_metrics.begin(),
+                                     last_ue_metrics.end(),
+                                     0.0,
+                                     [](double sum, const scheduler_ue_metrics& metric) {
+                                       return sum + metric.tot_pdsch_prbs_used;
+                                     });
+      logger.debug("Phase 2B: RRU.PrbUsedDl aggregate {} PRBs", dl_prbs_used);
+    }
+
+    dl_prbs_used = nof_dl_slots > 0 ? dl_prbs_used / nof_dl_slots : 0;
+
     meas_record_item_c meas_record_item;
     meas_record_item.set_integer() = dl_prbs_used;
     items.push_back(meas_record_item);
     meas_collected = true;
   }
 
+  // Phase 2B: UE-level metrics
   for (auto& ue : ues) {
     gnb_cu_ue_f1ap_id_t gnb_cu_ue_f1ap_id = int_to_gnb_cu_ue_f1ap_id(ue.gnb_du_ue_id().gnb_cu_ue_f1ap_id);
     uint32_t            ue_idx            = f1ap_ue_id_provider.get_ue_index(gnb_cu_ue_f1ap_id);
     meas_record_item_c  meas_record_item;
+
     if (ue_idx != du_ue_index_t::INVALID_DU_UE_INDEX && ue_idx < last_ue_metrics.size()) {
-      unsigned ue_mean_dl_prbs_used = nof_dl_slots > 0 ? last_ue_metrics[ue_idx].tot_pdsch_prbs_used / nof_dl_slots : 0;
-      meas_record_item.set_integer() = ue_mean_dl_prbs_used;
+      const auto& ue_metric = last_ue_metrics[ue_idx];
+
+      // Apply slice filter if requested
+      if (has_slice_filter) {
+        if (ue_metric.s_nssai.has_value() && ue_metric.s_nssai.value() == requested_slice.value()) {
+          unsigned ue_mean_dl_prbs_used = nof_dl_slots > 0 ? ue_metric.tot_pdsch_prbs_used / nof_dl_slots : 0;
+          meas_record_item.set_integer() = ue_mean_dl_prbs_used;
+        } else {
+          // UE not in requested slice
+          meas_record_item.set_no_value();
+        }
+      } else {
+        // No filter - return UE metric
+        unsigned ue_mean_dl_prbs_used = nof_dl_slots > 0 ? ue_metric.tot_pdsch_prbs_used / nof_dl_slots : 0;
+        meas_record_item.set_integer() = ue_mean_dl_prbs_used;
+      }
     } else {
       meas_record_item.set_no_value();
     }
@@ -507,33 +607,134 @@ bool e2sm_kpm_du_meas_provider_impl::get_prb_used_ul(const asn1::e2sm::label_inf
   if (last_ue_metrics.empty()) {
     return handle_no_meas_data_available(ues, items, asn1::e2sm::meas_record_item_c::types::options::integer);
   }
-  if ((label_info_list.size() > 1 or
-       (label_info_list.size() == 1 and not label_info_list[0].meas_label.no_label_present))) {
-    logger.debug("Metric: RRU.PrbUsedUl supports only NO_LABEL label.");
+
+  // Phase 2C: Parse label to check for SLICE_ID filtering
+  std::optional<s_nssai_t> requested_slice;
+  bool                     has_slice_filter = false;
+
+  if (label_info_list.size() == 1) {
+    const auto& label = label_info_list[0].meas_label;
+    if (label.slice_id_present) {
+      requested_slice  = extract_slice_id_from_label(label);
+      has_slice_filter = true;
+      logger.debug("Phase 2C: RRU.PrbUsedUl filtering by slice SST={}, SD={}",
+                   requested_slice.value().sst.value(),
+                   requested_slice.value().sd.is_set() ? requested_slice.value().sd.value() : 0);
+    } else if (!label.no_label_present) {
+      logger.debug("Metric: RRU.PrbUsedUl supports only NO_LABEL and SLICE_ID labels.");
+      return meas_collected;
+    }
+  } else if (label_info_list.size() > 1) {
+    logger.debug("Metric: RRU.PrbUsedUl supports only single label.");
     return meas_collected;
   }
 
+  // Phase 2C: E2 Node level metrics (aggregate across UEs)
   if (ues.empty()) {
-    double ul_prbs_used = std::accumulate(last_ue_metrics.begin(),
-                                          last_ue_metrics.end(),
-                                          0,
-                                          [](size_t sum, const scheduler_ue_metrics& metric) {
-                                            return sum + metric.tot_pusch_prbs_used;
-                                          }) /
-                          nof_ul_slots;
+    double ul_prbs_used = 0;
+    unsigned ue_count   = 0;
+
+    if (has_slice_filter) {
+      // Filter by slice
+      logger.debug("Phase 2C: Filtering {} UE metrics for slice SST={}, SD={}",
+                   last_ue_metrics.size(),
+                   requested_slice.value().sst.value(),
+                   requested_slice.value().sd.is_set() ? requested_slice.value().sd.value() : 0);
+      for (size_t metric_idx = 0; metric_idx < last_ue_metrics.size(); ++metric_idx) {
+        const auto& metric = last_ue_metrics[metric_idx];
+        if (metric.s_nssai.has_value()) {
+          // STEP 4: Verify slice comparison logic
+          const auto& ue_slice = metric.s_nssai.value();
+          const auto& req_slice = requested_slice.value();
+
+          logger.debug("Phase 2C: UE slice SST={}, SD={} (0x{:x}), is_set={}, comparing with requested SST={}, SD={} (0x{:x}), is_set={}",
+                       metric.s_nssai.value().sst.value(),
+                       metric.s_nssai.value().sd.value(),
+                       metric.s_nssai.value().sd.value(),
+                       metric.s_nssai.value().sd.is_set(),
+                       requested_slice.value().sst.value(),
+                       requested_slice.value().sd.value(),
+                       requested_slice.value().sd.value(),
+                       requested_slice.value().sd.is_set());
+          // Compare S-NSSAI: SST must match, SD is optional
+          bool sst_match = (ue_slice.sst == req_slice.sst);
+          bool sd_match = true;
+
+          // Only enforce SD matching if request has explicit non-zero SD
+          if (req_slice.sd.is_set() && req_slice.sd.value() != 0) {
+            // Request wants specific SD - UE must match
+            sd_match = ue_slice.sd.is_set() && (ue_slice.sd.value() == req_slice.sd.value());
+          }
+          // Otherwise: SD=0 or SD not set → match based on SST only
+
+          if (sst_match && sd_match) {
+            logger.debug("Phase 2C: MATCH! Adding UE with {} UL PRBs", metric.tot_pusch_prbs_used);
+            ul_prbs_used += metric.tot_pusch_prbs_used;
+            ue_count++;
+          } else {
+            logger.debug("Phase 2C: NO MATCH - skipping UE");
+          }
+        } else {
+          logger.debug("Phase 2C: UE has no slice info - skipping");
+        }
+      }
+
+
+      logger.debug("Phase 2C: RRU.PrbUsedUl slice-filtered {} UEs, {} PRBs", ue_count, ul_prbs_used);
+
+      // Update per-slice statistics (merge with existing DL stats)
+      if (requested_slice.has_value()) {
+        uint64_t key = slice_key(requested_slice.value());
+        if (slice_stats_map.find(key) != slice_stats_map.end()) {
+          slice_stats_map[key].ul_prb_used = (uint32_t)ul_prbs_used;
+        } else {
+          update_slice_prb_stats(requested_slice.value(), 0, (uint32_t)ul_prbs_used, ue_count);
+        }
+      }
+
+    } else {
+      // No filter - aggregate all UEs
+      ul_prbs_used = std::accumulate(last_ue_metrics.begin(),
+                                     last_ue_metrics.end(),
+                                     0.0,
+                                     [](double sum, const scheduler_ue_metrics& metric) {
+                                       return sum + metric.tot_pusch_prbs_used;
+                                     });
+      logger.debug("Phase 2C: RRU.PrbUsedUl aggregate {} PRBs", ul_prbs_used);
+    }
+
+    ul_prbs_used = nof_ul_slots > 0 ? ul_prbs_used / nof_ul_slots : 0;
+
+
     meas_record_item_c meas_record_item;
     meas_record_item.set_integer() = ul_prbs_used;
     items.push_back(meas_record_item);
     meas_collected = true;
   }
 
+  // Phase 2C: UE-level metrics
   for (auto& ue : ues) {
     gnb_cu_ue_f1ap_id_t gnb_cu_ue_f1ap_id = int_to_gnb_cu_ue_f1ap_id(ue.gnb_du_ue_id().gnb_cu_ue_f1ap_id);
     uint32_t            ue_idx            = f1ap_ue_id_provider.get_ue_index(gnb_cu_ue_f1ap_id);
     meas_record_item_c  meas_record_item;
+
     if (ue_idx != du_ue_index_t::INVALID_DU_UE_INDEX && ue_idx < last_ue_metrics.size()) {
-      unsigned ue_mean_ul_prbs_used = nof_ul_slots > 0 ? last_ue_metrics[ue_idx].tot_pusch_prbs_used / nof_ul_slots : 0;
-      meas_record_item.set_integer() = ue_mean_ul_prbs_used;
+      const auto& ue_metric = last_ue_metrics[ue_idx];
+
+      // Apply slice filter if requested
+      if (has_slice_filter) {
+        if (ue_metric.s_nssai.has_value() && ue_metric.s_nssai.value() == requested_slice.value()) {
+          unsigned ue_mean_ul_prbs_used = nof_ul_slots > 0 ? ue_metric.tot_pusch_prbs_used / nof_ul_slots : 0;
+          meas_record_item.set_integer() = ue_mean_ul_prbs_used;
+        } else {
+          // UE not in requested slice
+          meas_record_item.set_no_value();
+        }
+      } else {
+        // No filter - return UE metric
+        unsigned ue_mean_ul_prbs_used = nof_ul_slots > 0 ? ue_metric.tot_pusch_prbs_used / nof_ul_slots : 0;
+        meas_record_item.set_integer() = ue_mean_ul_prbs_used;
+      }
     } else {
       meas_record_item.set_no_value();
     }
@@ -715,6 +916,122 @@ float e2sm_kpm_du_meas_provider_impl::bytes_to_kbits(float value)
 {
   constexpr unsigned nof_bits_per_byte = 8;
   return (nof_bits_per_byte * value / 1e3);
+}
+
+// === Per-Slice PRB Statistics Management ===
+
+void e2sm_kpm_du_meas_provider_impl::clear_slice_prb_stats()
+{
+  slice_stats_map.clear();
+}
+
+uint64_t e2sm_kpm_du_meas_provider_impl::slice_key(const s_nssai_t& slice) const
+{
+  uint64_t key = (static_cast<uint64_t>(slice.sst.value()) << 32);
+  if (slice.sd.is_set()) {
+    key |= slice.sd.value();
+  }
+  return key;
+}
+
+void e2sm_kpm_du_meas_provider_impl::update_slice_prb_stats(const s_nssai_t& slice,
+                                                             uint32_t         dl_prbs,
+                                                             uint32_t         ul_prbs,
+                                                             uint32_t         ue_cnt)
+{
+  uint64_t key = slice_key(slice);
+  auto&    stats = slice_stats_map[key];
+
+  // Initialize on first access
+  if (stats.sst == 0) {
+    stats.sst       = slice.sst.value();
+    stats.sd        = slice.sd.is_set() ? slice.sd.value() : 0;
+    stats.sd_is_set = slice.sd.is_set();
+  }
+
+  stats.dl_prb_used = dl_prbs;
+  stats.ul_prb_used = ul_prbs;
+  stats.ue_count    = ue_cnt;
+}
+
+void e2sm_kpm_du_meas_provider_impl::log_per_slice_prb_utilization()
+{
+  if (slice_stats_map.empty()) {
+    return;
+  }
+
+  if (nof_cell_prbs == 0) {
+    logger.warning("[E2-KPM][Slice] Cannot compute utilization: nof_cell_prbs=0");
+    return;
+  }
+
+  logger.info("[E2-KPM][Slice] === Per-Slice PRB Utilization ===");
+
+  for (const auto& [key, stats] : slice_stats_map) {
+    double dl_util = (stats.dl_prb_used * 100.0) / nof_cell_prbs;
+    double ul_util = (stats.ul_prb_used * 100.0) / nof_cell_prbs;
+
+    if (stats.sd_is_set) {
+      logger.info("[E2-KPM][Slice] S-NSSAI: SST={} SD=0x{:06x}", stats.sst, stats.sd);
+    } else {
+      logger.info("[E2-KPM][Slice] S-NSSAI: SST={} SD=<not_set>", stats.sst);
+    }
+    logger.info("[E2-KPM][Slice]   DL_PRB_Used={}", stats.dl_prb_used);
+    logger.info("[E2-KPM][Slice]   UL_PRB_Used={}", stats.ul_prb_used);
+    logger.info("[E2-KPM][Slice]   Total_PRB={}", nof_cell_prbs);
+    logger.info("[E2-KPM][Slice]   DL_Utilization={:.1f}%", dl_util);
+    logger.info("[E2-KPM][Slice]   UL_Utilization={:.1f}%", ul_util);
+    logger.info("[E2-KPM][Slice]   UE_Count={}", stats.ue_count);
+  }
+}
+
+// Phase 2A: Extract S-NSSAI from measurement label for slice filtering
+std::optional<s_nssai_t> e2sm_kpm_du_meas_provider_impl::extract_slice_id_from_label(
+    const asn1::e2sm::meas_label_s& meas_label)
+{
+  if (!meas_label.slice_id_present) {
+    logger.debug("Phase 2A: No slice_id in measurement label");
+    return std::nullopt;
+  }
+
+  s_nssai_t slice_id;
+
+  // Extract SST (Slice/Service Type) - always present in S-NSSAI
+  uint8_t sst_value = static_cast<uint8_t>(meas_label.slice_id.sst.to_number());
+  slice_id.sst = slice_service_type(sst_value);
+  logger.debug("Phase 2A: Extracted SST={}", sst_value);
+
+  // Extract SD (Slice Differentiator) if present - optional in S-NSSAI
+  logger.debug("Phase 2A: sd_present={}", meas_label.slice_id.sd_present);
+  if (meas_label.slice_id.sd_present) {
+    uint32_t sd_value = static_cast<uint32_t>(meas_label.slice_id.sd.to_number());
+    logger.debug("Phase 2A: Extracted SD value={} (0x{:x})", sd_value, sd_value);
+    auto sd_result = slice_differentiator::create(sd_value);
+    if (sd_result.has_value()) {
+      slice_id.sd = sd_result.value();
+      logger.debug("Phase 2A: SD successfully created, is_set={}, value={} (0x{:x})",
+                   slice_id.sd.is_set(), slice_id.sd.value(), slice_id.sd.value());
+    } else {
+      logger.warning("Phase 2A: Invalid SD value in measurement label");
+      return std::nullopt;
+    }
+  } else {
+    logger.debug("Phase 2A: SD not present in label, using default (0x{:x})", slice_id.sd.value());
+  }
+
+  logger.debug("Phase 2A: Requested Slice from xApp SST={}, SD={} (0x{:x}), is_set={}",
+               slice_id.sst.value(),
+               slice_id.sd.is_set() ? slice_id.sd.value() : 0,
+               slice_id.sd.is_set() ? slice_id.sd.value() : 0,
+               slice_id.sd.is_set());
+
+  logger.debug("Phase 2A: Final extracted slice_id: SST={}, SD={} (0x{:x}), is_set={}",
+               slice_id.sst.value(),
+               slice_id.sd.value(),
+               slice_id.sd.value(),
+               slice_id.sd.is_set());
+
+  return slice_id;
 }
 
 bool e2sm_kpm_du_meas_provider_impl::get_drb_dl_mean_throughput(const asn1::e2sm::label_info_list_l     label_info_list,

@@ -26,13 +26,25 @@
 #include "srsran/asn1/e2sm/e2sm_rc_ies.h"
 #include "srsran/e2/e2.h"
 #include "srsran/e2/e2sm/e2sm.h"
+#include "srsran/e2/e2_du_ue_context_notifier.h"
+#include "srsran/f1ap/du/f1ap_du.h"
 #include <map>
+#include <vector>
+#include <mutex>
 
 namespace srsran {
-class e2sm_rc_impl : public e2sm_interface
+
+// Forward declaration
+class e2sm_rc_report_service_style4;
+
+namespace srs_du {
+class f1ap_ue_id_translator;
+}
+
+class e2sm_rc_impl : public e2sm_interface, public e2_du_ue_context_notifier
 {
 public:
-  e2sm_rc_impl(srslog::basic_logger& logger_, e2sm_handler& e2sm_packer_);
+  e2sm_rc_impl(srslog::basic_logger& logger_, e2sm_handler& e2sm_packer_, srs_du::f1ap_ue_id_translator& f1ap_ue_id_provider_);
 
   e2sm_handler& get_e2sm_packer() override;
 
@@ -43,9 +55,22 @@ public:
 
   bool add_e2sm_control_service(std::unique_ptr<e2sm_control_service> control_service) override;
 
+  // e2_du_ue_context_notifier interface
+  void on_ue_context_update(const e2_ue_context_info& ue_ctx) override;
+  void on_ue_context_release(du_ue_index_t ue_index) override;
+
+  // Service registration for instance tracking
+  void register_service(e2sm_rc_report_service_style4* service);
+  void unregister_service(e2sm_rc_report_service_style4* service);
+
 private:
   srslog::basic_logger&                                     logger;
   e2sm_handler&                                             e2sm_packer;
+  srs_du::f1ap_ue_id_translator&                            f1ap_ue_id_provider;
   std::map<uint32_t, std::unique_ptr<e2sm_control_service>> control_services;
+
+  // Track all active report service instances to forward UE context updates
+  std::vector<e2sm_rc_report_service_style4*>               active_report_services;
+  std::mutex                                                report_services_mutex;
 };
 } // namespace srsran

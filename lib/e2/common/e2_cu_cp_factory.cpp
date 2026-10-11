@@ -33,8 +33,25 @@
 #include "e2sm/e2sm_rc/e2sm_rc_control_service_impl.h"
 #include "e2sm/e2sm_rc/e2sm_rc_impl.h"
 #include "srsran/e2/e2_agent_dependencies.h"
+#include "srsran/f1ap/du/f1ap_du.h"
 
 using namespace srsran;
+
+namespace {
+
+// Dummy F1AP UE ID translator for CU-CP (Report Style 4 is DU-specific)
+class dummy_f1ap_ue_id_translator : public srs_du::f1ap_ue_id_translator
+{
+public:
+  std::optional<gnb_cu_ue_f1ap_id_t> get_gnb_cu_ue_f1ap_id(const du_ue_index_t&) const override { return std::nullopt; }
+  std::optional<gnb_cu_ue_f1ap_id_t> get_gnb_cu_ue_f1ap_id(const gnb_du_ue_f1ap_id_t&) const override { return std::nullopt; }
+  gnb_du_ue_f1ap_id_t get_gnb_du_ue_f1ap_id(const du_ue_index_t&) override { return gnb_du_ue_f1ap_id_t::invalid; }
+  gnb_du_ue_f1ap_id_t get_gnb_du_ue_f1ap_id(const gnb_cu_ue_f1ap_id_t&) override { return gnb_du_ue_f1ap_id_t::invalid; }
+  du_ue_index_t get_ue_index(const gnb_du_ue_f1ap_id_t&) override { return INVALID_DU_UE_INDEX; }
+  du_ue_index_t get_ue_index(const gnb_cu_ue_f1ap_id_t&) override { return INVALID_DU_UE_INDEX; }
+};
+
+} // namespace
 
 std::unique_ptr<e2_agent> srsran::create_e2_cu_cp_agent(const e2ap_configuration& e2ap_cfg_,
                                                         e2_connection_client&     e2_client_,
@@ -65,7 +82,8 @@ std::unique_ptr<e2_agent> srsran::create_e2_cu_cp_agent(const e2ap_configuration
 
   // E2SM-RC
   auto                                  e2sm_rc_packer = std::make_unique<e2sm_rc_asn1_packer>();
-  auto                                  e2sm_rc_iface  = std::make_unique<e2sm_rc_impl>(logger, *e2sm_rc_packer);
+  static dummy_f1ap_ue_id_translator    dummy_f1ap_translator;
+  auto                                  e2sm_rc_iface  = std::make_unique<e2sm_rc_impl>(logger, *e2sm_rc_packer, dummy_f1ap_translator);
   int                                   control_service_style_id = 3;
   std::unique_ptr<e2sm_control_service> rc_control_service_style =
       std::make_unique<e2sm_rc_control_service>(control_service_style_id);
