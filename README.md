@@ -1,3 +1,5 @@
+> **Modified fork:** this repository adds closed-loop slice control (per-slice PRB reporting, UE-to-slice context reporting and runtime slice quota enforcement) on top of srsRAN Project commit 3ed363dabf. See [README_SLICING.md](README_SLICING.md) and the companion xApp repository: https://github.com/udula27/oran-sc-ric-dynamic-slicing
+
 srsRAN Project
 ==============
 

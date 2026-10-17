@@ -23,6 +23,17 @@ To see exactly what changed:
 
 The graph-based xApp, dashboard and testbed scripts are in: https://github.com/udula27/oran-sc-ric-dynamic-slicing
 
+## Setting up the full closed-loop testbed
+
+This repository contains only the gNB side. A complete setup has four parts:
+
+1. **5G core:** Open5GS with three slices (SST 1, 2, 3, one UPF/DNN each). Example configuration: see the `testbed/` folder of the companion repository below.
+2. **gNB (this repository):** build as for upstream srsRAN Project and run with a configuration that (a) enables the E2 agent with the KPM and RC service models, pointing at the near-RT RIC, and (b) defines one slice per S-NSSAI used by your UEs. Every S-NSSAI used by a UE must have a configured slice.
+3. **Near-RT RIC:** the O-RAN SC near-RT RIC, deployed with the companion repository https://github.com/udula27/oran-sc-ric-dynamic-slicing.
+4. **xApp:** the dynamic slice PRB allocation xApp, also in the companion repository.
+
+Typical start order: core, near-RT RIC, gNB, UEs, xApp. See the companion repository's README for the xApp configuration and run instructions.
+
 ## Build and run
 
 Build as for upstream srsRAN Project (CMake). See the upstream documentation: https://docs.srsran.com/projects/project
