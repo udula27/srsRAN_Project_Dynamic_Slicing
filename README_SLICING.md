@@ -48,8 +48,6 @@ Install Open5GS from upstream (https://github.com/open5gs/open5gs) and run it on
 
 The AMF address the gNB connects to is 127.0.0.5.
 
-Open5GS changes: TBD (to be documented by the author).
-
 ### 2. Near-RT RIC (O-RAN SC)
 
 Clone and start the RIC from https://github.com/udula27/oran-sc-ric-dynamic-slicing:
@@ -58,8 +56,6 @@ Clone and start the RIC from https://github.com/udula27/oran-sc-ric-dynamic-slic
     docker compose up -d
 
 The E2 termination listens on SCTP port 36421. The gNB's e2 section must point to the RIC address.
-
-Check: TBD (containers expected to be running).
 
 ### 3. gNB
 
@@ -89,7 +85,7 @@ The commit hash, antenna count, and frequency fields depend on your build and ma
 
 Logs are written to /tmp/gnb.log.
 
-Check: TBD (AMF attach and E2 setup messages, and the info-level lines to look for).
+Look for the lines shown above in the terminal output. The AMF and E2 confirmation lines appear only at info level.
 
 ### 4. xApp and dashboard
 
@@ -106,7 +102,7 @@ The controller prints the E2 node ID it uses. It must match the node name the RI
 
 Attach the physical UEs last, after the gNB, RIC, and xApp are running.
 
-UE attachment steps: TBD (SIM setup on each device, and how to confirm a PDU session on each slice).
+Configure each UE for 5G SA with network mode set to 5G Only or 5G Preferred. Add each UE's SIM details to the subscriber database used by the core network before attaching it.
 
 ### Shutdown
 
