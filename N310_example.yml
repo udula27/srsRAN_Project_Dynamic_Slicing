@@ -1,0 +1,145 @@
+# Sample configuration for the open-source 5G testbed with dynamic slicing.
+# Replace the <...> placeholders with your lab addresses.
+# PLMN 00101, TAC 7, and SST 1/2/3 must match the core network configuration.
+##############################################
+# srsRAN Project gNB (CU/DU/RU) Configuration
+# USRP N310 + RAN Slicing Enabled
+##############################################
+
+cu_cp:
+  amf:
+    addr: 127.0.0.5
+    bind_addr: 127.0.0.1
+    supported_tracking_areas:
+      - tac: 7
+        plmn_list:
+          - plmn: "00101"
+            tai_slice_support_list:
+              - sst: 1  # eMBB slice (DNN: srsapn)
+              - sst: 2  # URLLC slice (DNN: emergency)
+              - sst: 3  # mMTC slice (DNN: iot)
+
+  inactivity_timer: 7200
+
+cu_up:
+  ngu:
+    socket:
+      - bind_addr: 127.0.0.1
+
+##############################################
+# RU (USRP N310) Configuration
+##############################################
+ru_sdr:
+  device_driver: uhd
+  device_args: type=n3xx,addr=<N310_IP>,mgmt_addr=<N310_IP>
+  clock: internal
+  sync: internal
+  srate: 61.44
+  #srate: 92.16  #61.44 for 60MHz, 92.16 for 80MHz
+  otw_format: sc16
+  tx_gain: 50
+  rx_gain: 60
+
+##############################################
+# Cell Configuration
+##############################################
+cell_cfg:
+  dl_arfcn: 627340
+  band: 78
+  channel_bandwidth_MHz: 60
+  #channel_bandwidth_MHz: 80
+  common_scs: 30
+  plmn: "00101"
+  tac: 7
+  pci: 1
+
+  slicing:
+    - sst: 1
+      sd: 0
+      sched_cfg:
+        min_prb_policy_ratio: 0
+        max_prb_policy_ratio: 100
+    - sst: 2
+      sd: 0
+      sched_cfg:
+        min_prb_policy_ratio: 10   # Reserve ≥10% PRBs for SST2 so GBR flow is always serviceable
+        max_prb_policy_ratio: 100
+    - sst: 3
+      sd: 0
+      sched_cfg:
+        min_prb_policy_ratio: 0
+        max_prb_policy_ratio: 100
+
+
+##############################################
+# DU Scheduler Configuration (RAN Slicing)
+##############################################
+# Optional scheduler parameters can go here
+
+##############################################
+# Logging / Debugging
+##############################################
+log:
+  filename: /tmp/gnb.log
+  all_level: warning
+  e2ap_level: warning
+  hex_max_size: 0
+
+##############################################
+# PCAP Capture (Optional)
+##############################################
+pcap:
+  mac_enable: false
+  mac_filename: /tmp/gnb_mac.pcap
+  ngap_enable: false
+  ngap_filename: /tmp/gnb_ngap.pcap
+  e2ap_enable: false
+  e2ap_du_filename: /tmp/gnb_du_e2ap.pcap
+  e2ap_cu_cp_filename: /tmp/gnb_cu_cp_e2ap.pcap
+  e2ap_cu_up_filename: /tmp/gnb_cu_up_e2ap.pcap
+
+##############################################
+# E2 Interface (Your RIC)
+##############################################
+e2:
+  enable_du_e2: true
+  e2sm_kpm_enabled: true
+  e2sm_rc_enabled: true
+  addr: <RIC_IP>    #127.0.0.1
+  bind_addr: <gNB_IP>     #127.0.0.1
+  port: 36421
+
+##############################################
+# Metrics Reporting
+##############################################
+metrics:
+        autostart_stdout_metrics: false        # Sets whether or not to autostart stdout metrics reporting.
+        enable_json: true                     # Enables reporting metrics in JSON format
+        enable_log: false                     # Disables log metrics reporting.
+        enable_verbose: false                 # Disables extended detail metrics reporting.
+        layers: 
+            enable_app_usage: true            # Enable application usage metrics.
+            enable_ngap: true                 # Enable NGAP usage metricx.
+            enable_e1ap: true                 # Enable E1AP metrics.
+            enable_pdcp: true                 # Enable PDCP metrics.
+            enable_rrc: true                  # Enable RRC metrics.
+            skip_cu_up_executor: false        # Enable CU-UP executor metrics.
+            enable_sched: true                # Enable DU scheduler metrics.
+            enable_rlc: true                  # Enable RLC metrics.
+            enable_mac: true                  # Enable MAC metrics.
+            enable_executor: true             # Enable DU-high executor metrics.
+            enable_du_low: true               # Enable DU low metrics (upper physical layer).
+            enable_ru: true                   # Enable Radio Unit metrics.
+
+        periodicity: 
+            app_usage_report_period: 1000       # Application resource usage metrics report period in milliseconds.
+            cu_cp_report_period: 1000           # CU-CP metrics report period in milliseconds.
+            cu_up_report_period: 1000           # CU-UP metrics report period in milliseconds.
+            du_report_period: 1000              # DU statistics report period in milliseconds.
+            executors_report_period: 1000       # Executors metrics report period in milliseconds.
+
+remote_control:
+        enabled: true            # Enables the Remote Control Server.
+        bind_addr: 127.0.0.1    # Remote Control Server bind address.
+        port: 8001               # Port where the remote control server listens for incoming connections.
+
