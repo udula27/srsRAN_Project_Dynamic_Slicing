@@ -1,4 +1,12 @@
-> **Modified fork:** this repository adds closed-loop slice control (per-slice PRB reporting, UE-to-slice context reporting and runtime slice quota enforcement) on top of srsRAN Project commit 3ed363dabf. See [README_SLICING.md](README_SLICING.md) and the companion xApp repository: https://github.com/udula27/oran-sc-ric-dynamic-slicing
+# srsRAN Project: closed-loop dynamic slicing fork
+
+This fork adds closed-loop slice control on top of srsRAN Project commit 3ed363dabf: per-slice PRB reporting, UE-to-slice context reporting, and runtime slice quota control. It works with the companion xApp repository at https://github.com/udula27/oran-sc-ric-dynamic-slicing.
+
+**Start here:** [README_SLICING.md](README_SLICING.md) has the full startup sequence.
+
+Order: 5G core, then near-RT RIC (`docker compose up -d`), then gNB (`sudo ./build/apps/gnb/gnb -c N310.yml`), then xApp and dashboard, and finally the physical UEs.
+
+---
 
 srsRAN Project
 ==============
