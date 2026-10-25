@@ -25,18 +25,92 @@ The graph-based xApp, dashboard and testbed scripts are in: https://github.com/u
 
 ## Setting up the full closed-loop testbed
 
-This repository contains only the gNB side. A complete setup has four parts:
+This repository contains only the gNB side. A complete setup has four parts, started in this order: 5G core, near-RT RIC, gNB, and the xApp with its dashboard. The physical UEs are attached last.
 
-1. **5G core:** Open5GS with three slices (SST 1, 2, 3, one UPF/DNN each). Example configuration: see the `testbed/` folder of the companion repository below.
-2. **gNB (this repository):** build as for upstream srsRAN Project and run with a configuration that (a) enables the E2 agent with the KPM and RC service models, pointing at the near-RT RIC, and (b) defines one slice per S-NSSAI used by your UEs. Every S-NSSAI used by a UE must have a configured slice.
-3. **Near-RT RIC:** the O-RAN SC near-RT RIC, deployed with the companion repository https://github.com/udula27/oran-sc-ric-dynamic-slicing.
-4. **xApp:** the dynamic slice PRB allocation xApp, also in the companion repository.
+Base code: srsRAN Project commit 3ed363dabf. Tagged release: srsRAN-dynamic-slicing-final.
 
-Typical start order: core, near-RT RIC, gNB, UEs, xApp. See the companion repository's README for the xApp configuration and run instructions.
+### Build
 
-## Build and run
+Build as for upstream srsRAN Project (CMake). See https://docs.srsran.com/projects/project for the upstream build instructions. The gNB binary is written to build/apps/gnb/gnb.
 
-Build as for upstream srsRAN Project (CMake). See the upstream documentation: https://docs.srsran.com/projects/project
+### 1. 5G core (Open5GS)
+
+Install Open5GS from upstream (https://github.com/open5gs/open5gs) and run it on bare metal, not in Docker. Configure it to match the RAN:
+
+- PLMN: MCC 001, MNC 01 (PLMN 00101)
+- Tracking area code: 7
+- Three slices, each with SD 0:
+  - SST 1: eMBB, DNN srsapn
+  - SST 2: URLLC, DNN emergency
+  - SST 3: mMTC, DNN iot
+- One UPF and one DNN per slice.
+- Add the test subscriber using your own values. Do not record real IMSI, K, or OPc values in this repository.
+
+The AMF address the gNB connects to is 127.0.0.5.
+
+Open5GS changes: TBD (to be documented by the author).
+
+### 2. Near-RT RIC (O-RAN SC)
+
+Clone and start the RIC from https://github.com/udula27/oran-sc-ric-dynamic-slicing:
+
+    cd oran-sc-ric
+    docker compose up -d
+
+The E2 termination listens on SCTP port 36421. The gNB's e2 section must point to the RIC address.
+
+Check: TBD (containers expected to be running).
+
+### 3. gNB
+
+Create your working configuration from the sample, then replace the placeholders <N310_IP>, <RIC_IP>, and <gNB_IP> with your lab addresses:
+
+    cp N310_example.yml N310.yml
+
+The PLMN, TAC, and SST values must match the core configuration above.
+
+Start the gNB from the repository root, using an absolute path to your configuration:
+
+    sudo ./build/apps/gnb/gnb -c /absolute/path/to/N310.yml
+
+If the shell reports "Permission denied", make the binary executable once with chmod +x build/apps/gnb/gnb.
+
+The sample configuration sets log levels to warning. The output below is what the binary prints at startup. The AMF and E2 confirmation lines are logged at info level and appear only when all_level and e2ap_level are set to info in the configuration:
+
+    --== srsRAN gNB (commit 3ed363dabf) ==--
+
+    Available radio types: uhd.
+    Cell pci=1, bw=60 MHz, 1T1R, dl_arfcn=627340 (n78), dl_freq=3410.1 MHz, dl_ssb_arfcn=<value>, ul_freq=<value> MHz
+
+    ==== gNB started ===
+    Type <h> to view help
+
+The commit hash, antenna count, and frequency fields depend on your build and may differ from this example. The output is similar, not identical.
+
+Logs are written to /tmp/gnb.log.
+
+Check: TBD (AMF attach and E2 setup messages, and the info-level lines to look for).
+
+### 4. xApp and dashboard
+
+Start the slicing controller and its Streamlit dashboard:
+
+    cd oran-sc-ric/xApps/python
+    ./run_test_xapp_3_docker_dual_venv.sh
+
+The dashboard is at http://localhost:8503. The alternate Dash dashboard uses run_test_xapp_3_docker_dual_venv_dash.sh on port 8504.
+
+The controller prints the E2 node ID it uses. It must match the node name the RIC reports in rtmgr_sim logs (the ranNamelist value). The default is gnbd_001_001_00019b_0; if your node name differs, pass it with --e2_node_id.
+
+### 5. UEs (physical devices)
+
+Attach the physical UEs last, after the gNB, RIC, and xApp are running.
+
+UE attachment steps: TBD (SIM setup on each device, and how to confirm a PDU session on each slice).
+
+### Shutdown
+
+Stop the UEs, then the xApp and dashboard, then the gNB (Ctrl+C). Run docker compose down in oran-sc-ric, then stop the core network.
 
 ## License
 
